@@ -58,6 +58,7 @@ swarm-sentinel only needs a Docker API host. A socket proxy is optional and conf
 ### 1. Polling over Events
 
 - swarm-sentinel polls desired state and actual state periodically
+- Actual state is collected every cycle, even when desired state is unchanged
 - No webhooks, CI listeners, or push-based triggers
 - Avoids missed events and brittle integrations
 
@@ -65,6 +66,7 @@ swarm-sentinel only needs a Docker API host. A socket proxy is optional and conf
 
 - swarm-sentinel consumes `docker-compose.yml`
 - It does not parse templates, manifests, or generators
+- The compose file is fully rendered; no environment interpolation is performed
 - Upstream complexity is handled at deploy time
 
 ### 3. Read-Only by Construction
@@ -130,6 +132,7 @@ This convention is **not enforced** by swarm-sentinel but is expected to be foll
 - Read from Docker Swarm API via a configurable Docker API host (proxy optional)
 - Services and tasks only
 - No mutation or exec capabilities
+- Optional stack scoping via `SS_STACK_NAME` (empty means all services)
 
 ---
 

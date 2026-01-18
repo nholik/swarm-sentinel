@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
+	"github.com/nholik/swarm-sentinel/internal/swarm"
 	"github.com/rs/zerolog"
 )
 
@@ -217,5 +218,63 @@ services:
 	}
 	if _, ok := r.lastDesiredState.Services["web"]; !ok {
 		t.Fatalf("expected web service in desired state")
+	}
+}
+
+type fakeSwarmClient struct {
+	calls      int
+	stackNames []string
+	state      *swarm.ActualState
+	err        error
+}
+
+func (f *fakeSwarmClient) Ping(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (f *fakeSwarmClient) GetActualState(ctx context.Context, stackName string) (*swarm.ActualState, error) {
+	_ = ctx
+	f.calls++
+	f.stackNames = append(f.stackNames, stackName)
+	return f.state, f.err
+}
+
+func TestRunner_RunOnce_CollectsActualStateWhenComposeUnchanged(t *testing.T) {
+	validCompose := []byte(`
+services:
+  web:
+    image: nginx:latest
+`)
+	fetcher := &recordingFetcher{
+		results: []compose.FetchResult{
+			{Body: validCompose, ETag: "etag-1"},
+			{NotModified: true, ETag: "etag-1"},
+		},
+	}
+	swarmClient := &fakeSwarmClient{
+		state: &swarm.ActualState{
+			Services: map[string]swarm.ActualService{},
+		},
+	}
+
+	r := New(zerolog.Nop(), time.Second,
+		WithComposeFetcher(fetcher),
+		WithSwarmClient(swarmClient),
+		WithStackName("prod"),
+	)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if swarmClient.calls != 2 {
+		t.Fatalf("expected 2 swarm calls, got %d", swarmClient.calls)
+	}
+	if len(swarmClient.stackNames) != 2 || swarmClient.stackNames[0] != "prod" || swarmClient.stackNames[1] != "prod" {
+		t.Fatalf("expected stack name to be passed on every call")
 	}
 }

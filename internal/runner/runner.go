@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
+	"github.com/nholik/swarm-sentinel/internal/swarm"
 	"github.com/rs/zerolog"
 )
 
@@ -34,9 +35,12 @@ type Runner struct {
 	tickerFactory    func(time.Duration) Ticker
 	runOnce          func(context.Context) error
 	composeFetcher   compose.Fetcher
+	swarmClient      swarm.Client
+	stackName        string
 	composeETag      string
 	composeHash      string
 	lastDesiredState *compose.DesiredState
+	lastActualState  *swarm.ActualState
 }
 
 // Option customizes runner behavior.
@@ -60,6 +64,20 @@ func WithRunOnce(runOnce func(context.Context) error) Option {
 func WithComposeFetcher(fetcher compose.Fetcher) Option {
 	return func(r *Runner) {
 		r.composeFetcher = fetcher
+	}
+}
+
+// WithSwarmClient sets the Swarm client used by the default RunOnce.
+func WithSwarmClient(client swarm.Client) Option {
+	return func(r *Runner) {
+		r.swarmClient = client
+	}
+}
+
+// WithStackName scopes Swarm service collection to a stack name.
+func WithStackName(name string) Option {
+	return func(r *Runner) {
+		r.stackName = name
 	}
 }
 
@@ -114,50 +132,74 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 }
 
 func (r *Runner) defaultRunOnce(ctx context.Context) error {
-	if r.composeFetcher == nil {
+	if r.composeFetcher != nil {
+		result, err := r.composeFetcher.Fetch(ctx, r.composeETag)
+		if err != nil {
+			return err
+		}
+
+		if result.ETag != "" {
+			r.composeETag = result.ETag
+		}
+
+		if result.NotModified {
+			r.logger.Debug().Msg("compose unchanged")
+		} else {
+			fingerprint, err := compose.Fingerprint(result.Body)
+			if err != nil {
+				return err
+			}
+			if fingerprint == r.composeHash {
+				r.logger.Debug().Msg("compose fingerprint unchanged")
+			} else {
+				r.composeHash = fingerprint
+
+				r.logger.Info().
+					Int("bytes", len(result.Body)).
+					Str("etag", result.ETag).
+					Str("last_modified", result.LastModified).
+					Str("fingerprint", fingerprint).
+					Msg("compose fetched")
+
+				desiredState, err := compose.ParseDesiredState(ctx, result.Body)
+				if err != nil {
+					return err
+				}
+				r.lastDesiredState = &desiredState
+
+				r.logger.Info().
+					Int("services", len(desiredState.Services)).
+					Msg("parsed desired state")
+			}
+		}
+	}
+
+	if r.swarmClient == nil {
 		return nil
 	}
 
-	result, err := r.composeFetcher.Fetch(ctx, r.composeETag)
+	actualState, err := r.swarmClient.GetActualState(ctx, r.stackName)
 	if err != nil {
 		return err
 	}
+	r.lastActualState = actualState
 
-	if result.ETag != "" {
-		r.composeETag = result.ETag
+	serviceCount := 0
+	runningReplicas := 0
+	if actualState != nil {
+		serviceCount = len(actualState.Services)
+		for _, service := range actualState.Services {
+			runningReplicas += service.RunningReplicas
+		}
 	}
 
-	if result.NotModified {
-		r.logger.Debug().Msg("compose unchanged")
-		return nil
+	event := r.logger.Info().
+		Int("services", serviceCount).
+		Int("running_replicas", runningReplicas)
+	if r.stackName != "" {
+		event = event.Str("stack_name", r.stackName)
 	}
-
-	fingerprint, err := compose.Fingerprint(result.Body)
-	if err != nil {
-		return err
-	}
-	if fingerprint == r.composeHash {
-		r.logger.Debug().Msg("compose fingerprint unchanged")
-		return nil
-	}
-	r.composeHash = fingerprint
-
-	r.logger.Info().
-		Int("bytes", len(result.Body)).
-		Str("etag", result.ETag).
-		Str("last_modified", result.LastModified).
-		Str("fingerprint", fingerprint).
-		Msg("compose fetched")
-
-	desiredState, err := compose.ParseDesiredState(ctx, result.Body)
-	if err != nil {
-		return err
-	}
-	r.lastDesiredState = &desiredState
-
-	r.logger.Info().
-		Int("services", len(desiredState.Services)).
-		Msg("parsed desired state")
+	event.Msg("collected actual state")
 
 	return nil
 }

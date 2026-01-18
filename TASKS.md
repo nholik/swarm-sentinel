@@ -55,9 +55,9 @@
   - Tests: configs/secrets short+long syntax, external name mapping, inline definitions
 
 ## Phase 3 — Swarm Integration
-> **Note:** Consider validating Docker connection (SS-007) early to fail fast before compose fetching.
+> **Note:** Validate Docker connection (SS-007) early to fail fast before compose fetching.
 
-- [ ] SS-007: Docker client via official Go SDK
+- [x] SS-007: Docker client via official Go SDK
   - Create `internal/swarm` package for Docker client interactions
   - Define `SwarmClient` interface for testability (mock Swarm API in tests)
   - Initialize Docker client with configurable host (`SS_DOCKER_PROXY_URL`)
@@ -66,26 +66,31 @@
   - Set reasonable timeouts for API calls
   - Tests: connection validation success/failure
   - Tests: mock client for unit testing without Docker dependency
+  - Add TLS/https support:
+    - Add TLS config options (e.g., `SS_DOCKER_TLS_CA`, `SS_DOCKER_TLS_CERT`, `SS_DOCKER_TLS_KEY`) and wire `WithTLSClientConfig`
+    - Allow `https://` hosts when TLS is configured, mapping to `tcp://` with `WithScheme("https")`
+    - Honor `DOCKER_CERT_PATH`/`DOCKER_TLS_VERIFY` for compatibility with Docker tooling
 
-- [ ] SS-008: Actual state collection
-  - Implement `GetServices(ctx) ([]SwarmService, error)` to list Swarm services
-  - Implement `GetTasks(ctx, serviceID) ([]SwarmTask, error)` to get tasks per service
-  - Use Docker Go SDK service/task list APIs (`ServiceList`, `TaskList`)
+- [x] SS-008: Actual state collection
+  - Implement service + task collection using Docker Go SDK APIs (`ServiceList`, `TaskList`)
+  - Scope services using `SS_STACK_NAME` (label filter `com.docker.stack.namespace` or name prefix mapping); empty means all services
+  - Replica source: use `Spec.Mode.Replicated.Replicas` when replicated; for global, use `ServiceStatus.DesiredTasks`
+  - Image source: prefer `Spec.TaskTemplate.ContainerSpec.Image` for the expected image
+  - Config/secret names: read `TaskSpec.ContainerSpec.Configs[].ConfigName` and `Secrets[].SecretName`
+  - Task filtering: use SDK task filters (`filters.Arg("service", service.ID)`)
   - Define `ActualState` struct mirroring `DesiredState` structure:
     - Service name → image, running replicas, attached configs/secrets
   - Filter tasks by state (only count `running` tasks as healthy)
   - Extract config/secret names from task spec (for drift detection in Phase 4)
   - Handle pagination if service/task lists are large
+  - Add `SwarmClient` dependency to `Runner`
+  - Call `GetActualState()` each cycle; do not skip actual state when compose is unchanged
+  - Log actual state summary (service count, total replicas)
+  - Store `lastActualState` for Phase 4 comparison
+  - Keep compose short-circuiting for parsing, not for actual-state collection
   - Tests: mock API responses for various service states
   - Tests: task filtering logic (running vs failed/pending)
   - Tests: config/secret extraction from task spec
-
-- [ ] SS-008a: Wire actual state collection into runner
-  - Add `SwarmClient` dependency to `Runner`
-  - Call `GetActualState()` after parsing desired state
-  - Log actual state summary (service count, total replicas)
-  - Store `lastActualState` for Phase 4 comparison
-  - Skip Swarm calls if desired state unchanged (optimization)
 
 ## Phase 4 — Core Logic
 - [ ] SS-009: Health evaluation engine

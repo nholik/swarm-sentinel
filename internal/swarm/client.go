@@ -24,6 +24,6 @@ type Client interface {
 	// Ping validates connectivity to the Docker daemon.
 	Ping(ctx context.Context) error
 
-	// GetActualState retrieves the current state of all services.
-	GetActualState(ctx context.Context) (*ActualState, error)
+	// GetActualState retrieves the current state of services, optionally scoped to a stack.
+	GetActualState(ctx context.Context, stackName string) (*ActualState, error)
 }
