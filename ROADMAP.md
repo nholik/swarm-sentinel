@@ -15,5 +15,8 @@ Reuse logic during CI to catch bad deploys.
 ## Compose YAML Normalization
 Normalize compose content (e.g., whitespace/comment-insensitive) before fingerprinting.
 
+## File URL Compose Sources
+Allow `file://` compose URLs for local development and testing.
+
 ## Optional Enforcement Mode
 High risk, future only.

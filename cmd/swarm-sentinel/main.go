@@ -8,22 +8,31 @@ import (
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/nholik/swarm-sentinel/internal/config"
+	"github.com/nholik/swarm-sentinel/internal/coordinator"
 	"github.com/nholik/swarm-sentinel/internal/logging"
 	"github.com/nholik/swarm-sentinel/internal/runner"
+	"github.com/nholik/swarm-sentinel/internal/swarm"
 )
 
 func main() {
-	logger := logging.New()
 	cfg, err := config.Load()
 	if err != nil {
+		// Use default logger for config load errors since we don't have log level yet
+		logger := logging.New()
 		logger.Fatal().Err(err).Msg("failed to load config")
 	}
+
+	logger := logging.NewWithLevel(cfg.LogLevel)
 
 	logger.Info().
 		Str("compose_url", cfg.ComposeURL).
 		Dur("compose_timeout", cfg.ComposeTimeout).
 		Str("docker_proxy_url", cfg.DockerProxyURL).
+		Dur("docker_api_timeout", cfg.DockerAPITimeout).
+		Str("stack_name", cfg.StackName).
+		Bool("docker_tls_enabled", cfg.DockerTLSEnabled).
 		Dur("poll_interval", cfg.PollInterval).
+		Str("log_level", cfg.LogLevel).
 		Str("slack_webhook", secretStatus(cfg.SlackWebhookURL)).
 		Msg("config loaded")
 
@@ -32,14 +41,74 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	composeFetcher, err := compose.NewHTTPFetcher(cfg.ComposeURL, cfg.ComposeTimeout, 0)
+	swarmClient, err := swarm.NewDockerClient(cfg.DockerProxyURL, cfg.DockerAPITimeout, swarm.TLSConfig{
+		Enabled:  cfg.DockerTLSEnabled,
+		Verify:   cfg.DockerTLSVerify,
+		CAFile:   cfg.DockerTLSCA,
+		CertFile: cfg.DockerTLSCert,
+		KeyFile:  cfg.DockerTLSKey,
+	})
 	if err != nil {
-		logger.Fatal().Err(err).Msg("failed to initialize compose fetcher")
+		logger.Fatal().Err(err).Msg("failed to initialize docker client")
+	}
+	defer func() {
+		if err := swarmClient.Close(); err != nil {
+			logger.Warn().Err(err).Msg("error closing docker client")
+		}
+	}()
+
+	if err := swarmClient.Ping(ctx); err != nil {
+		logger.Fatal().Err(err).Msg("docker api unreachable")
 	}
 
-	r := runner.New(logger, cfg.PollInterval, runner.WithComposeFetcher(composeFetcher))
-	if err := r.Run(ctx); err != nil {
-		logger.Fatal().Err(err).Msg("runner exited with error")
+	// Detect mode: multi-stack or single-stack
+	mappingPath, err := config.FindMappingFile()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to find mapping file")
+	}
+
+	if mappingPath != "" {
+		// Mode 2: Multi-stack via mapping file
+		mappings, err := config.LoadMappingFile(mappingPath)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("failed to load mapping file")
+		}
+
+		logger.Info().
+			Int("stacks", len(mappings)).
+			Str("mapping_file", mappingPath).
+			Msg("multi-stack mode")
+
+		coord := coordinator.New(logger, cfg, mappings, swarmClient)
+		if err := coord.Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msg("coordinator exited with error")
+		}
+	} else {
+		// Mode 1: Single-stack (backward compatible)
+		if cfg.ComposeURL == "" {
+			logger.Fatal().Msg("SS_COMPOSE_URL is required in single-stack mode")
+		}
+
+		logger.Info().
+			Str("compose_url", cfg.ComposeURL).
+			Str("stack_name", cfg.StackName).
+			Msg("single-stack mode")
+
+		composeFetcher, err := compose.NewHTTPFetcher(cfg.ComposeURL, cfg.ComposeTimeout, 0)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("failed to initialize compose fetcher")
+		}
+
+		r := runner.New(
+			logger,
+			cfg.PollInterval,
+			runner.WithComposeFetcher(composeFetcher),
+			runner.WithSwarmClient(swarmClient),
+			runner.WithStackName(cfg.StackName),
+		)
+		if err := r.Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msg("runner exited with error")
+		}
 	}
 }
 

@@ -9,10 +9,11 @@ import (
 
 func TestLoad_ValidationAndDefaults(t *testing.T) {
 	cases := []struct {
-		name    string
-		env     map[string]string
-		wantErr bool
-		want    Config
+		name        string
+		env         map[string]string
+		mappingFile string
+		wantErr     bool
+		want        Config
 	}{
 		{
 			name:    "missing compose url",
@@ -25,11 +26,37 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				envComposeURL: "https://example.com/compose.yml",
 			},
 			want: Config{
-				PollInterval:   defaultPollInterval,
-				ComposeTimeout: defaultComposeTimeout,
-				ComposeURL:     "https://example.com/compose.yml",
-				DockerProxyURL: defaultDockerProxyURL,
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
 			},
+		},
+		{
+			name:        "mapping file without compose url",
+			env:         map[string]string{},
+			mappingFile: "stacks:\n  - name: prod\n    compose_url: https://example.com/compose.yml\n",
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name:        "compose url and mapping file",
+			env:         map[string]string{envComposeURL: "https://example.com/compose.yml"},
+			mappingFile: "stacks:\n  - name: prod\n    compose_url: https://example.com/compose.yml\n",
+			wantErr:     true,
 		},
 		{
 			name: "invalid poll interval",
@@ -79,6 +106,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "invalid compose url scheme",
+			env: map[string]string{
+				envComposeURL: "ftp://example.com/compose.yml",
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid docker proxy url",
 			env: map[string]string{
 				envComposeURL:     "https://example.com/compose.yml",
@@ -101,11 +135,16 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				envSlackWebhookURL: "https://hooks.slack.com/services/T00/B00/XXX",
 			},
 			want: Config{
-				PollInterval:    defaultPollInterval,
-				ComposeTimeout:  defaultComposeTimeout,
-				ComposeURL:      "https://example.com/compose.yml",
-				DockerProxyURL:  defaultDockerProxyURL,
-				SlackWebhookURL: "https://hooks.slack.com/services/T00/B00/XXX",
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				SlackWebhookURL:  "https://hooks.slack.com/services/T00/B00/XXX",
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -116,10 +155,160 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				envDockerProxyURL: "http://proxy:2375",
 			},
 			want: Config{
-				PollInterval:   45 * time.Second,
-				ComposeTimeout: defaultComposeTimeout,
-				ComposeURL:     "https://example.com/compose.yml",
-				DockerProxyURL: "http://proxy:2375",
+				PollInterval:     45 * time.Second,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   "http://proxy:2375",
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "stack name set",
+			env: map[string]string{
+				envComposeURL: "https://example.com/compose.yml",
+				envStackName:  "prod",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "prod",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "tls verify missing certs",
+			env: map[string]string{
+				envComposeURL:      "https://example.com/compose.yml",
+				envDockerTLSVerify: "true",
+			},
+			wantErr: true,
+		},
+		{
+			name: "tls verify with certs",
+			env: map[string]string{
+				envComposeURL:      "https://example.com/compose.yml",
+				envDockerTLSVerify: "true",
+				envDockerTLSCA:     "/tmp/ca.pem",
+				envDockerTLSCert:   "/tmp/cert.pem",
+				envDockerTLSKey:    "/tmp/key.pem",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: true,
+				DockerTLSVerify:  true,
+				DockerTLSCA:      "/tmp/ca.pem",
+				DockerTLSCert:    "/tmp/cert.pem",
+				DockerTLSKey:     "/tmp/key.pem",
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "tls verify with docker cert path",
+			env: map[string]string{
+				envComposeURL:            "https://example.com/compose.yml",
+				envDockerTLSVerifyCompat: "1",
+				envDockerCertPathCompat:  "/tmp/certs",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: true,
+				DockerTLSVerify:  true,
+				DockerTLSCA:      "/tmp/certs/ca.pem",
+				DockerTLSCert:    "/tmp/certs/cert.pem",
+				DockerTLSKey:     "/tmp/certs/key.pem",
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "tls enabled without verify",
+			env: map[string]string{
+				envComposeURL:    "https://example.com/compose.yml",
+				envDockerTLSCert: "/tmp/cert.pem",
+				envDockerTLSKey:  "/tmp/key.pem",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: true,
+				DockerTLSVerify:  false,
+				DockerTLSCert:    "/tmp/cert.pem",
+				DockerTLSKey:     "/tmp/key.pem",
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "custom docker api timeout",
+			env: map[string]string{
+				envComposeURL:       "https://example.com/compose.yml",
+				envDockerAPITimeout: "60s",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: 60 * time.Second,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "invalid docker api timeout",
+			env: map[string]string{
+				envComposeURL:       "https://example.com/compose.yml",
+				envDockerAPITimeout: "nope",
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero docker api timeout",
+			env: map[string]string{
+				envComposeURL:       "https://example.com/compose.yml",
+				envDockerAPITimeout: "0s",
+			},
+			wantErr: true,
+		},
+		{
+			name: "custom log level",
+			env: map[string]string{
+				envComposeURL: "https://example.com/compose.yml",
+				envLogLevel:   "debug",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         "debug",
 			},
 		},
 	}
@@ -133,6 +322,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 
 			for key, value := range tc.env {
 				t.Setenv(key, value)
+			}
+			if tc.mappingFile != "" {
+				mappingPath := filepath.Join(tmpDir, "compose-mapping.yaml")
+				if err := os.WriteFile(mappingPath, []byte(tc.mappingFile), 0o600); err != nil {
+					t.Fatalf("write mapping file: %v", err)
+				}
+				t.Setenv(envComposeMappingFile, mappingPath)
 			}
 
 			got, err := Load()
