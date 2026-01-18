@@ -266,26 +266,21 @@ func (r *Runner) evaluateAndPersist(ctx context.Context) error {
 
 	transitions := transition.DetectServiceTransitions(snapshot, stackHealth)
 	for _, change := range transitions {
-		event := r.logger.Info().
+		var event *zerolog.Event
+		switch change.CurrentStatus {
+		case health.StatusFailed:
+			event = r.logger.Error()
+		case health.StatusDegraded:
+			event = r.logger.Warn()
+		default:
+			event = r.logger.Info()
+		}
+
+		event = event.
 			Str("service", change.Name).
 			Str("previous_status", string(change.PreviousStatus)).
 			Str("current_status", string(change.CurrentStatus)).
 			Strs("reasons", change.Reasons)
-
-		switch change.CurrentStatus {
-		case health.StatusFailed:
-			event = r.logger.Error().
-				Str("service", change.Name).
-				Str("previous_status", string(change.PreviousStatus)).
-				Str("current_status", string(change.CurrentStatus)).
-				Strs("reasons", change.Reasons)
-		case health.StatusDegraded:
-			event = r.logger.Warn().
-				Str("service", change.Name).
-				Str("previous_status", string(change.PreviousStatus)).
-				Str("current_status", string(change.CurrentStatus)).
-				Strs("reasons", change.Reasons)
-		}
 
 		if change.ReplicaChange != nil {
 			event = event.Int("desired_replicas", change.ReplicaChange.CurrentDesired).

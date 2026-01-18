@@ -152,3 +152,68 @@ func TestDetectServiceTransitions_Mixed(t *testing.T) {
 		t.Fatalf("expected drift details, got %+v", worker.Drift)
 	}
 }
+
+func TestDetectServiceTransitions_RemovedService(t *testing.T) {
+	// Service "old" exists in previous snapshot but not in current health.
+	// This simulates a service being removed from the compose file.
+	// Current behavior: removed services are silently ignored (no transition emitted).
+	// This is intentional - we only emit transitions for services in the current desired state.
+	prev := &state.StackSnapshot{
+		Services: map[string]health.ServiceHealth{
+			"old": {
+				Name:            "old",
+				Status:          health.StatusOK,
+				DesiredReplicas: 2,
+				RunningReplicas: 2,
+			},
+			"remaining": {
+				Name:   "remaining",
+				Status: health.StatusOK,
+			},
+		},
+	}
+	current := health.StackHealth{
+		Status: health.StatusOK,
+		Services: map[string]health.ServiceHealth{
+			"remaining": {
+				Name:   "remaining",
+				Status: health.StatusOK,
+			},
+		},
+	}
+
+	transitions := DetectServiceTransitions(prev, current)
+
+	// No transitions expected: "remaining" is unchanged (OK -> OK),
+	// and "old" is not in current so no transition is emitted for it.
+	if len(transitions) != 0 {
+		t.Fatalf("expected no transitions for removed service, got %d: %+v", len(transitions), transitions)
+	}
+}
+
+func TestDetectServiceTransitions_SortedOrder(t *testing.T) {
+	// Verify transitions are returned in sorted order by service name.
+	current := health.StackHealth{
+		Status: health.StatusFailed,
+		Services: map[string]health.ServiceHealth{
+			"zebra":  {Name: "zebra", Status: health.StatusFailed, Reasons: []string{"down"}},
+			"alpha":  {Name: "alpha", Status: health.StatusDegraded, Reasons: []string{"degraded"}},
+			"middle": {Name: "middle", Status: health.StatusFailed, Reasons: []string{"down"}},
+		},
+	}
+
+	transitions := DetectServiceTransitions(nil, current)
+
+	if len(transitions) != 3 {
+		t.Fatalf("expected 3 transitions, got %d", len(transitions))
+	}
+	if transitions[0].Name != "alpha" {
+		t.Fatalf("expected first transition to be alpha, got %s", transitions[0].Name)
+	}
+	if transitions[1].Name != "middle" {
+		t.Fatalf("expected second transition to be middle, got %s", transitions[1].Name)
+	}
+	if transitions[2].Name != "zebra" {
+		t.Fatalf("expected third transition to be zebra, got %s", transitions[2].Name)
+	}
+}

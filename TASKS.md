@@ -115,7 +115,7 @@
   - Tests: single-stack mode (backward compat), multi-stack coordination, graceful shutdown, error isolation
 
 ## Phase 4 — Core Logic
-- [ ] SS-009: Service health evaluation + config/secret drift detection
+- [x] SS-009: Service health evaluation + config/secret drift detection
   - Create `internal/health` package with models:
     - `ServiceStatus` (`OK`, `DEGRADED`, `FAILED`)
     - `ServiceHealth` (service name, status, reasons, drift details)
@@ -137,7 +137,7 @@
   - Include drift details in health output for later alert payload shaping
   - Tests: per-rule unit tests (replicas, image, missing/extra services, missing configs/secrets)
   - Tests: drift-type classification for missing/extra config/secret
-- [ ] SS-010: State persistence
+- [x] SS-010: State persistence
   - Add `SS_STATE_PATH` config (default `/var/lib/swarm-sentinel/state.json`)
   - Create `internal/state` package with a store interface designed for future SQLite backing
   - Persist per-stack snapshots: desired fingerprint, service health map, last evaluation time
@@ -145,7 +145,7 @@
     - Ensure directory exists; write atomically (temp + rename)
     - Handle missing/corrupt state by starting fresh (log warning)
   - Tests: read/write roundtrip, missing file, corrupted JSON, multi-stack separation
-- [ ] SS-011: Transition detection
+- [x] SS-011: Transition detection
   - Compare current service health against persisted snapshots; emit events for transitions
   - Service-level transitions only (stack health used for summary/logging)
   - First run: emit alerts only for non-OK services; OK services are silent

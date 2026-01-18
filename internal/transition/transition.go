@@ -1,6 +1,8 @@
 package transition
 
 import (
+	"sort"
+
 	"github.com/nholik/swarm-sentinel/internal/health"
 	"github.com/nholik/swarm-sentinel/internal/state"
 )
@@ -69,37 +71,38 @@ func DetectServiceTransitions(prev *state.StackSnapshot, current health.StackHea
 		})
 	}
 
+	// Sort by service name for deterministic output
+	sort.Slice(transitions, func(i, j int) bool {
+		return transitions[i].Name < transitions[j].Name
+	})
+
 	return transitions
 }
 
 func buildReplicaChange(prev health.ServiceHealth, current health.ServiceHealth, hadPrev bool) *ReplicaChange {
+	// Skip if new service with zero replicas (not meaningful change info)
 	if !hadPrev && current.DesiredReplicas == 0 && current.RunningReplicas == 0 {
 		return nil
 	}
-	if hadPrev || current.DesiredReplicas != 0 || current.RunningReplicas != 0 {
-		return &ReplicaChange{
-			PreviousDesired: prev.DesiredReplicas,
-			CurrentDesired:  current.DesiredReplicas,
-			PreviousRunning: prev.RunningReplicas,
-			CurrentRunning:  current.RunningReplicas,
-			DesiredDelta:    current.DesiredReplicas - prev.DesiredReplicas,
-			RunningDelta:    current.RunningReplicas - prev.RunningReplicas,
-		}
+	return &ReplicaChange{
+		PreviousDesired: prev.DesiredReplicas,
+		CurrentDesired:  current.DesiredReplicas,
+		PreviousRunning: prev.RunningReplicas,
+		CurrentRunning:  current.RunningReplicas,
+		DesiredDelta:    current.DesiredReplicas - prev.DesiredReplicas,
+		RunningDelta:    current.RunningReplicas - prev.RunningReplicas,
 	}
-	return nil
 }
 
 func buildImageChange(prev health.ServiceHealth, current health.ServiceHealth, hadPrev bool) *ImageChange {
+	// Skip if new service with no image info (not meaningful change info)
 	if !hadPrev && current.DesiredImage == "" && current.ActualImage == "" {
 		return nil
 	}
-	if hadPrev || current.DesiredImage != "" || current.ActualImage != "" {
-		return &ImageChange{
-			PreviousDesired: prev.DesiredImage,
-			CurrentDesired:  current.DesiredImage,
-			PreviousActual:  prev.ActualImage,
-			CurrentActual:   current.ActualImage,
-		}
+	return &ImageChange{
+		PreviousDesired: prev.DesiredImage,
+		CurrentDesired:  current.DesiredImage,
+		PreviousActual:  prev.ActualImage,
+		CurrentActual:   current.ActualImage,
 	}
-	return nil
 }
