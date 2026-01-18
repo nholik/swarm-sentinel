@@ -70,6 +70,27 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "invalid slack webhook url",
+			env: map[string]string{
+				envComposeURL:      "https://example.com/compose.yml",
+				envSlackWebhookURL: "not-a-url",
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid slack webhook url",
+			env: map[string]string{
+				envComposeURL:      "https://example.com/compose.yml",
+				envSlackWebhookURL: "https://hooks.slack.com/services/T00/B00/XXX",
+			},
+			want: Config{
+				PollInterval:    defaultPollInterval,
+				ComposeURL:      "https://example.com/compose.yml",
+				DockerProxyURL:  defaultDockerProxyURL,
+				SlackWebhookURL: "https://hooks.slack.com/services/T00/B00/XXX",
+			},
+		},
+		{
 			name: "custom docker proxy and poll interval",
 			env: map[string]string{
 				envComposeURL:     "https://example.com/compose.yml",

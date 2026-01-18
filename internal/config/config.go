@@ -78,6 +78,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	if cfg.SlackWebhookURL != "" {
+		if err := validateURL(cfg.SlackWebhookURL, "SS_SLACK_WEBHOOK_URL"); err != nil {
+			return Config{}, err
+		}
+	}
+
 	return cfg, nil
 }
 
