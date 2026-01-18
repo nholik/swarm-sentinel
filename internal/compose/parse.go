@@ -22,12 +22,23 @@ type DesiredState struct {
 }
 
 // DesiredService captures the fields we track for a service.
+//
+// Global Mode Comparison Strategy:
+// For global mode services, Replicas is set to 0 at parse time because the actual
+// replica count depends on the number of nodes in the cluster, which is only known
+// at runtime. When comparing desired vs actual state:
+//   - For replicated mode: compare DesiredService.Replicas with ActualService.DesiredReplicas
+//   - For global mode: skip replica count comparison (Replicas=0 indicates global)
+//     and rely on ActualService.DesiredReplicas from Swarm's ServiceStatus.DesiredTasks
+//
+// The health evaluation engine should check Mode first and apply the appropriate
+// comparison logic.
 type DesiredService struct {
-	Image    string
-	Mode     string
-	Replicas int
-	Configs  []string
-	Secrets  []string
+	Image    string   // Expected image reference (may include digest in actual state)
+	Mode     string   // "replicated" or "global"
+	Replicas int      // Desired replica count; 0 for global mode (see above)
+	Configs  []string // Sorted list of config names attached to the service
+	Secrets  []string // Sorted list of secret names attached to the service
 }
 
 // ParseDesiredState parses compose content into a normalized desired state model.

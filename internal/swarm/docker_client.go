@@ -28,8 +28,9 @@ type TLSConfig struct {
 }
 
 // DockerClient implements Client using the official Docker Go SDK.
+// The api field uses the dockerAPI interface to allow mock implementations in tests.
 type DockerClient struct {
-	api     *client.Client
+	api     dockerAPI
 	timeout time.Duration
 }
 
@@ -98,7 +99,7 @@ func NewDockerClient(host string, timeout time.Duration, tls TLSConfig) (*Docker
 	}
 
 	return &DockerClient{
-		api:     api,
+		api:     &dockerClientAdapter{client: api},
 		timeout: timeout,
 	}, nil
 }
