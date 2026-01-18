@@ -9,10 +9,11 @@ import (
 
 func TestLoad_ValidationAndDefaults(t *testing.T) {
 	cases := []struct {
-		name    string
-		env     map[string]string
-		wantErr bool
-		want    Config
+		name        string
+		env         map[string]string
+		mappingFile string
+		wantErr     bool
+		want        Config
 	}{
 		{
 			name:    "missing compose url",
@@ -35,6 +36,27 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSVerify:  false,
 				LogLevel:         defaultLogLevel,
 			},
+		},
+		{
+			name:        "mapping file without compose url",
+			env:         map[string]string{},
+			mappingFile: "stacks:\n  - name: prod\n    compose_url: https://example.com/compose.yml\n",
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name:        "compose url and mapping file",
+			env:         map[string]string{envComposeURL: "https://example.com/compose.yml"},
+			mappingFile: "stacks:\n  - name: prod\n    compose_url: https://example.com/compose.yml\n",
+			wantErr:     true,
 		},
 		{
 			name: "invalid poll interval",
@@ -80,6 +102,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			name: "invalid compose url missing scheme",
 			env: map[string]string{
 				envComposeURL: "example.com/compose.yml",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid compose url scheme",
+			env: map[string]string{
+				envComposeURL: "ftp://example.com/compose.yml",
 			},
 			wantErr: true,
 		},
@@ -293,6 +322,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 
 			for key, value := range tc.env {
 				t.Setenv(key, value)
+			}
+			if tc.mappingFile != "" {
+				mappingPath := filepath.Join(tmpDir, "compose-mapping.yaml")
+				if err := os.WriteFile(mappingPath, []byte(tc.mappingFile), 0o600); err != nil {
+					t.Fatalf("write mapping file: %v", err)
+				}
+				t.Setenv(envComposeMappingFile, mappingPath)
 			}
 
 			got, err := Load()

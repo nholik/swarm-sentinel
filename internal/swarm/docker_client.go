@@ -166,10 +166,7 @@ func (c *DockerClient) GetActualState(ctx context.Context, stackName string) (*A
 		serviceFilters.Add("label", "com.docker.stack.namespace="+stackName)
 	}
 
-	services, err := c.api.ServiceList(ctx, dockertypes.ServiceListOptions{
-		Filters: serviceFilters,
-		Status:  true,
-	})
+	services, err := c.listServices(ctx, serviceFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -197,9 +194,9 @@ func (c *DockerClient) collectServiceState(ctx context.Context, service swarmtyp
 		image = service.Spec.TaskTemplate.ContainerSpec.Image
 	}
 
-	// Docker API doesn't paginate; query per service to keep task lists bounded.
+	// Docker API doesn't paginate; query per service and fall back to ID prefix paging.
 	taskFilters := filters.NewArgs(filters.Arg("service", service.ID))
-	tasks, err := c.api.TaskList(ctx, dockertypes.TaskListOptions{Filters: taskFilters})
+	tasks, err := c.listTasks(ctx, taskFilters, desired)
 	if err != nil {
 		return ActualService{}, err
 	}
@@ -226,6 +223,61 @@ func normalizeServiceName(name, stackName string) string {
 		return strings.TrimPrefix(name, prefix)
 	}
 	return name
+}
+
+func (c *DockerClient) listServices(ctx context.Context, baseFilters filters.Args) ([]swarmtypes.Service, error) {
+	listFn := func(f filters.Args) ([]swarmtypes.Service, error) {
+		return c.api.ServiceList(ctx, dockertypes.ServiceListOptions{
+			Filters: f,
+			Status:  true,
+		})
+	}
+
+	services, err := listFn(baseFilters)
+	if err == nil && len(services) <= maxListPageSize {
+		return services, nil
+	}
+
+	paged, pageErr := paginateByIDPrefix(baseFilters, listFn, func(service swarmtypes.Service) string {
+		return service.ID
+	})
+	if pageErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return services, nil
+	}
+
+	return paged, nil
+}
+
+func (c *DockerClient) listTasks(ctx context.Context, baseFilters filters.Args, expected int) ([]swarmtypes.Task, error) {
+	listFn := func(f filters.Args) ([]swarmtypes.Task, error) {
+		return c.api.TaskList(ctx, dockertypes.TaskListOptions{Filters: f})
+	}
+
+	if expected > maxListPageSize {
+		return paginateByIDPrefix(baseFilters, listFn, func(task swarmtypes.Task) string {
+			return task.ID
+		})
+	}
+
+	tasks, err := listFn(baseFilters)
+	if err == nil && len(tasks) <= maxListPageSize {
+		return tasks, nil
+	}
+
+	paged, pageErr := paginateByIDPrefix(baseFilters, listFn, func(task swarmtypes.Task) string {
+		return task.ID
+	})
+	if pageErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return tasks, nil
+	}
+
+	return paged, nil
 }
 
 func serviceModeAndReplicas(service swarmtypes.Service) (string, int) {

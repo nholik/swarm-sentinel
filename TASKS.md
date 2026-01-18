@@ -93,7 +93,7 @@
   - Tests: config/secret extraction from task spec
 
 ## Phase 3.5 — Multi-Stack Support
-- [ ] SS-007.5: Multi-stack compose mapping configuration
+- [x] SS-007.5: Multi-stack compose mapping configuration
   - Add optional `SS_COMPOSE_MAPPING_FILE` environment variable
   - Create `internal/config/mapping.go` to parse YAML mapping files
   - Implement smart path detection: `SS_COMPOSE_MAPPING_FILE` env var → `/run/configs/compose-mapping.yaml` (Swarm) → `/run/secrets/compose-mapping.yaml` → `./compose-mapping.yaml`
@@ -103,7 +103,7 @@
   - Tests: valid/invalid YAML, missing/duplicate names, file not found (fallback to single mode)
   - Document YAML schema and Swarm deployment patterns in code comments
 
-- [ ] SS-008.5: Coordinator for multi-runner orchestration
+- [x] SS-008.5: Coordinator for multi-runner orchestration
   - Create `internal/coordinator/coordinator.go` with `Coordinator` type
   - Implement runner spawn logic: one `Runner` per stack mapping (or single runner if single-stack mode)
   - Implement `Run(ctx)` lifecycle: parallel runner execution, context propagation, error handling

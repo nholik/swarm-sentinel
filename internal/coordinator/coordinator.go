@@ -20,6 +20,8 @@ type Coordinator struct {
 	swarmClient  swarm.Client
 	runners      map[string]*runner.Runner
 	runnerErrors map[string]error
+	cancel       context.CancelFunc
+	done         chan struct{}
 	mu           sync.RWMutex
 }
 
@@ -38,6 +40,21 @@ func New(logger zerolog.Logger, cfg config.Config, mappings []config.StackMappin
 // Run starts all runners in parallel and blocks until context is canceled.
 // Returns nil on clean shutdown; logs any per-runner errors internally.
 func (c *Coordinator) Run(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	c.mu.Lock()
+	c.cancel = cancel
+	c.done = done
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.cancel = nil
+		c.done = nil
+		c.mu.Unlock()
+		close(done)
+	}()
+
 	c.logger.Info().
 		Int("stacks", len(c.mappings)).
 		Msg("starting coordinator")
@@ -46,7 +63,7 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, mapping := range c.mappings {
 		wg.Add(1)
-		go c.spawnRunner(ctx, &wg, mapping)
+		go c.spawnRunner(runCtx, &wg, mapping)
 	}
 
 	// Wait for all runners to exit (via context cancellation or error)
@@ -63,6 +80,21 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Stop cancels all running runners and waits for shutdown.
+func (c *Coordinator) Stop() {
+	c.mu.RLock()
+	cancel := c.cancel
+	done := c.done
+	c.mu.RUnlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 }
 
 // spawnRunner creates and runs a single Runner for the given stack mapping.

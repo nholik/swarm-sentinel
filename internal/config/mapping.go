@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"time"
 
@@ -16,7 +15,8 @@ type StackMapping struct {
 	Timeout    time.Duration `yaml:"timeout,omitempty"`
 }
 
-// MappingFile is the parsed YAML structure for multi-stack configuration.
+// MappingFile is the parsed YAML structure for multi-stack configuration:
+// stacks: [{name, compose_url, timeout}]
 type MappingFile struct {
 	Stacks []StackMapping `yaml:"stacks"`
 }
@@ -62,8 +62,8 @@ func validateMappings(mappings []StackMapping) error {
 			return fmt.Errorf("stack %q: compose_url is required", m.Name)
 		}
 
-		if _, err := url.Parse(m.ComposeURL); err != nil {
-			return fmt.Errorf("stack %q: invalid compose_url: %w", m.Name, err)
+		if err := validateHTTPURL(m.ComposeURL, "compose_url"); err != nil {
+			return fmt.Errorf("stack %q: %w", m.Name, err)
 		}
 
 		if seen[m.Name] {

@@ -2,6 +2,8 @@ package coordinator
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ func (f *fakeSwarmClient) Close() error {
 }
 
 func TestCoordinator_SingleStack(t *testing.T) {
+	composeURL := newComposeServer(t)
 	cfg := config.Config{
 		PollInterval:   100 * time.Millisecond,
 		ComposeTimeout: 1 * time.Second,
@@ -33,7 +36,7 @@ func TestCoordinator_SingleStack(t *testing.T) {
 	mappings := []config.StackMapping{
 		{
 			Name:       "test-stack",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 	}
 
@@ -63,6 +66,7 @@ func TestCoordinator_SingleStack(t *testing.T) {
 }
 
 func TestCoordinator_MultipleStacks(t *testing.T) {
+	composeURL := newComposeServer(t)
 	cfg := config.Config{
 		PollInterval:   100 * time.Millisecond,
 		ComposeTimeout: 1 * time.Second,
@@ -71,15 +75,15 @@ func TestCoordinator_MultipleStacks(t *testing.T) {
 	mappings := []config.StackMapping{
 		{
 			Name:       "stack-1",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 		{
 			Name:       "stack-2",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 		{
 			Name:       "stack-3",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 	}
 
@@ -111,6 +115,7 @@ func TestCoordinator_MultipleStacks(t *testing.T) {
 }
 
 func TestCoordinator_PerStackTimeout(t *testing.T) {
+	composeURL := newComposeServer(t)
 	cfg := config.Config{
 		PollInterval:   100 * time.Millisecond,
 		ComposeTimeout: 1 * time.Second,
@@ -119,11 +124,11 @@ func TestCoordinator_PerStackTimeout(t *testing.T) {
 	mappings := []config.StackMapping{
 		{
 			Name:       "default-timeout",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 		{
 			Name:       "custom-timeout",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 			Timeout:    5 * time.Second,
 		},
 	}
@@ -150,6 +155,7 @@ func TestCoordinator_PerStackTimeout(t *testing.T) {
 }
 
 func TestCoordinator_GracefulShutdown(t *testing.T) {
+	composeURL := newComposeServer(t)
 	cfg := config.Config{
 		PollInterval:   100 * time.Millisecond,
 		ComposeTimeout: 1 * time.Second,
@@ -158,11 +164,11 @@ func TestCoordinator_GracefulShutdown(t *testing.T) {
 	mappings := []config.StackMapping{
 		{
 			Name:       "stack-a",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 		{
 			Name:       "stack-b",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 	}
 
@@ -228,6 +234,7 @@ func TestCoordinator_InvalidURL(t *testing.T) {
 }
 
 func TestCoordinator_SharedSwarmClient(t *testing.T) {
+	composeURL := newComposeServer(t)
 	cfg := config.Config{
 		PollInterval:   100 * time.Millisecond,
 		ComposeTimeout: 1 * time.Second,
@@ -236,11 +243,11 @@ func TestCoordinator_SharedSwarmClient(t *testing.T) {
 	mappings := []config.StackMapping{
 		{
 			Name:       "stack-1",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 		{
 			Name:       "stack-2",
-			ComposeURL: "https://httpbin.org/status/200",
+			ComposeURL: composeURL,
 		},
 	}
 
@@ -267,5 +274,72 @@ func TestCoordinator_SharedSwarmClient(t *testing.T) {
 	runners := coord.GetRunners()
 	if len(runners) != 2 {
 		t.Fatalf("expected 2 runners, got %d", len(runners))
+	}
+}
+
+func TestCoordinator_Stop(t *testing.T) {
+	composeURL := newComposeServer(t)
+	cfg := config.Config{
+		PollInterval:   50 * time.Millisecond,
+		ComposeTimeout: 1 * time.Second,
+	}
+
+	mappings := []config.StackMapping{
+		{
+			Name:       "stack-a",
+			ComposeURL: composeURL,
+		},
+	}
+
+	coord := New(
+		zerolog.Nop(),
+		cfg,
+		mappings,
+		&fakeSwarmClient{},
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- coord.Run(context.Background())
+	}()
+
+	waitForRunners(t, coord, 1, time.Second)
+	coord.Stop()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("coordinator did not stop after Stop")
+	}
+}
+
+func newComposeServer(t *testing.T) string {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		_, _ = w.Write([]byte("services:\n  web:\n    image: nginx:latest\n"))
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func waitForRunners(t *testing.T, coord *Coordinator, expected int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.After(timeout)
+	for {
+		if len(coord.GetRunners()) >= expected {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected %d runners to start", expected)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }

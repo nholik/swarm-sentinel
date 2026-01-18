@@ -173,12 +173,22 @@ func Load() (Config, error) {
 		cfg.DockerTLSCert != "" ||
 		cfg.DockerTLSKey != ""
 
-	if cfg.ComposeURL == "" {
-		return Config{}, errors.New("SS_COMPOSE_URL is required")
+	mappingPath, err := FindMappingFile()
+	if err != nil {
+		return Config{}, err
 	}
 
-	if err := validateURL(cfg.ComposeURL, "SS_COMPOSE_URL"); err != nil {
-		return Config{}, err
+	if mappingPath != "" && cfg.ComposeURL != "" {
+		return Config{}, fmt.Errorf("SS_COMPOSE_URL and compose mapping file are mutually exclusive: %s", mappingPath)
+	}
+	if mappingPath == "" && cfg.ComposeURL == "" {
+		return Config{}, errors.New("SS_COMPOSE_URL is required when no compose mapping file is present")
+	}
+
+	if cfg.ComposeURL != "" {
+		if err := validateHTTPURL(cfg.ComposeURL, "SS_COMPOSE_URL"); err != nil {
+			return Config{}, err
+		}
 	}
 
 	if err := validateURL(cfg.DockerProxyURL, "SS_DOCKER_PROXY_URL"); err != nil {
@@ -256,6 +266,20 @@ func validateURL(value, name string) error {
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("invalid %s: must include scheme and host", name)
+	}
+	return nil
+}
+
+func validateHTTPURL(value, name string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("invalid %s: must include scheme and host", name)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("invalid %s: must be http or https URL", name)
 	}
 	return nil
 }

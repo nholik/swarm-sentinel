@@ -143,6 +143,25 @@ func TestLoadMappingFile_InvalidURL(t *testing.T) {
 	}
 }
 
+func TestLoadMappingFile_InvalidScheme(t *testing.T) {
+	tmpDir := t.TempDir()
+	yamlFile := filepath.Join(tmpDir, "bad_scheme.yaml")
+
+	yaml := `stacks:
+  - name: prod
+    compose_url: ftp://example.com/compose.yml
+`
+
+	if err := os.WriteFile(yamlFile, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, err := LoadMappingFile(yamlFile)
+	if err == nil {
+		t.Fatal("expected error for invalid scheme")
+	}
+}
+
 func TestLoadMappingFile_DuplicateNames(t *testing.T) {
 	tmpDir := t.TempDir()
 	yamlFile := filepath.Join(tmpDir, "dups.yaml")
