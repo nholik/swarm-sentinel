@@ -178,9 +178,14 @@ func (f *recordingFetcher) Fetch(ctx context.Context, previousETag string) (comp
 }
 
 func TestRunner_RunOnce_UsesComposeFetcherETag(t *testing.T) {
+	validCompose := []byte(`
+services:
+  web:
+    image: nginx:latest
+`)
 	fetcher := &recordingFetcher{
 		results: []compose.FetchResult{
-			{Body: []byte("one"), ETag: "etag-1"},
+			{Body: validCompose, ETag: "etag-1"},
 			{NotModified: true, ETag: "etag-1"},
 		},
 	}
@@ -204,5 +209,13 @@ func TestRunner_RunOnce_UsesComposeFetcherETag(t *testing.T) {
 	}
 	if fetcher.calls[1] != "etag-1" {
 		t.Fatalf("expected etag-1 on second call, got %q", fetcher.calls[1])
+	}
+
+	// Verify desired state was parsed
+	if r.lastDesiredState == nil {
+		t.Fatalf("expected lastDesiredState to be set")
+	}
+	if _, ok := r.lastDesiredState.Services["web"]; !ok {
+		t.Fatalf("expected web service in desired state")
 	}
 }

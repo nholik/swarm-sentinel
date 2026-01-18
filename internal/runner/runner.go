@@ -29,13 +29,14 @@ func (t timeTicker) Stop() {
 
 // Runner orchestrates the main execution loop.
 type Runner struct {
-	logger         zerolog.Logger
-	pollInterval   time.Duration
-	tickerFactory  func(time.Duration) Ticker
-	runOnce        func(context.Context) error
-	composeFetcher compose.Fetcher
-	composeETag    string
-	composeHash    string
+	logger           zerolog.Logger
+	pollInterval     time.Duration
+	tickerFactory    func(time.Duration) Ticker
+	runOnce          func(context.Context) error
+	composeFetcher   compose.Fetcher
+	composeETag      string
+	composeHash      string
+	lastDesiredState *compose.DesiredState
 }
 
 // Option customizes runner behavior.
@@ -147,5 +148,16 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 		Str("last_modified", result.LastModified).
 		Str("fingerprint", fingerprint).
 		Msg("compose fetched")
+
+	desiredState, err := compose.ParseDesiredState(ctx, result.Body)
+	if err != nil {
+		return err
+	}
+	r.lastDesiredState = &desiredState
+
+	r.logger.Info().
+		Int("services", len(desiredState.Services)).
+		Msg("parsed desired state")
+
 	return nil
 }

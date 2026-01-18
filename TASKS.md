@@ -56,8 +56,34 @@
 
 ## Phase 3 — Swarm Integration
 > **Note:** Consider validating Docker connection (SS-007) early to fail fast before compose fetching.
+
 - [ ] SS-007: Docker client via socket proxy
+  - Create `internal/swarm` package for Docker client interactions
+  - Define `SwarmClient` interface for testability (mock Swarm API in tests)
+  - Initialize Docker client with configurable host (`SS_DOCKER_PROXY_URL`)
+  - Validate connection on startup (ping or info call) — fail fast if unreachable
+  - Set reasonable timeouts for API calls
+  - Tests: connection validation success/failure
+  - Tests: mock client for unit testing without Docker dependency
+
 - [ ] SS-008: Actual state collection
+  - Implement `GetServices(ctx) ([]SwarmService, error)` to list Swarm services
+  - Implement `GetTasks(ctx, serviceID) ([]SwarmTask, error)` to get tasks per service
+  - Define `ActualState` struct mirroring `DesiredState` structure:
+    - Service name → image, running replicas, attached configs/secrets
+  - Filter tasks by state (only count `running` tasks as healthy)
+  - Extract config/secret names from task spec (for drift detection in Phase 4)
+  - Handle pagination if service/task lists are large
+  - Tests: mock API responses for various service states
+  - Tests: task filtering logic (running vs failed/pending)
+  - Tests: config/secret extraction from task spec
+
+- [ ] SS-008a: Wire actual state collection into runner
+  - Add `SwarmClient` dependency to `Runner`
+  - Call `GetActualState()` after parsing desired state
+  - Log actual state summary (service count, total replicas)
+  - Store `lastActualState` for Phase 4 comparison
+  - Skip Swarm calls if desired state unchanged (optimization)
 
 ## Phase 4 — Core Logic
 - [ ] SS-009: Health evaluation engine
