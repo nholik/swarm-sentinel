@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/rs/zerolog"
 )
 
@@ -158,4 +159,63 @@ func waitForCalls(ch <-chan struct{}, count int, timeout time.Duration) bool {
 		}
 	}
 	return true
+}
+
+type recordingFetcher struct {
+	results []compose.FetchResult
+	calls   []string
+	idx     int
+}
+
+func (f *recordingFetcher) Fetch(ctx context.Context, previousETag string) (compose.FetchResult, error) {
+	f.calls = append(f.calls, previousETag)
+	if f.idx >= len(f.results) {
+		return compose.FetchResult{}, nil
+	}
+	result := f.results[f.idx]
+	f.idx++
+	return result, nil
+}
+
+func TestRunner_RunOnce_UsesComposeFetcherETag(t *testing.T) {
+	validCompose := []byte(`
+services:
+  web:
+    image: nginx:latest
+`)
+	fetcher := &recordingFetcher{
+		results: []compose.FetchResult{
+			{Body: validCompose, ETag: "etag-1"},
+			{NotModified: true, ETag: "etag-1"},
+		},
+	}
+
+	r := New(zerolog.Nop(), time.Second,
+		WithComposeFetcher(fetcher),
+	)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fetcher.calls) != 2 {
+		t.Fatalf("expected 2 fetch calls, got %d", len(fetcher.calls))
+	}
+	if fetcher.calls[0] != "" {
+		t.Fatalf("expected empty etag on first call, got %q", fetcher.calls[0])
+	}
+	if fetcher.calls[1] != "etag-1" {
+		t.Fatalf("expected etag-1 on second call, got %q", fetcher.calls[1])
+	}
+
+	// Verify desired state was parsed
+	if r.lastDesiredState == nil {
+		t.Fatalf("expected lastDesiredState to be set")
+	}
+	if _, ok := r.lastDesiredState.Services["web"]; !ok {
+		t.Fatalf("expected web service in desired state")
+	}
 }

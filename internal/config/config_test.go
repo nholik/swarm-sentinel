@@ -26,6 +26,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			},
 			want: Config{
 				PollInterval:   defaultPollInterval,
+				ComposeTimeout: defaultComposeTimeout,
 				ComposeURL:     "https://example.com/compose.yml",
 				DockerProxyURL: defaultDockerProxyURL,
 			},
@@ -35,6 +36,22 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			env: map[string]string{
 				envComposeURL:   "https://example.com/compose.yml",
 				envPollInterval: "nope",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid compose timeout",
+			env: map[string]string{
+				envComposeURL:     "https://example.com/compose.yml",
+				envComposeTimeout: "nope",
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero compose timeout",
+			env: map[string]string{
+				envComposeURL:     "https://example.com/compose.yml",
+				envComposeTimeout: "0s",
 			},
 			wantErr: true,
 		},
@@ -70,6 +87,28 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "invalid slack webhook url",
+			env: map[string]string{
+				envComposeURL:      "https://example.com/compose.yml",
+				envSlackWebhookURL: "not-a-url",
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid slack webhook url",
+			env: map[string]string{
+				envComposeURL:      "https://example.com/compose.yml",
+				envSlackWebhookURL: "https://hooks.slack.com/services/T00/B00/XXX",
+			},
+			want: Config{
+				PollInterval:    defaultPollInterval,
+				ComposeTimeout:  defaultComposeTimeout,
+				ComposeURL:      "https://example.com/compose.yml",
+				DockerProxyURL:  defaultDockerProxyURL,
+				SlackWebhookURL: "https://hooks.slack.com/services/T00/B00/XXX",
+			},
+		},
+		{
 			name: "custom docker proxy and poll interval",
 			env: map[string]string{
 				envComposeURL:     "https://example.com/compose.yml",
@@ -78,6 +117,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			},
 			want: Config{
 				PollInterval:   45 * time.Second,
+				ComposeTimeout: defaultComposeTimeout,
 				ComposeURL:     "https://example.com/compose.yml",
 				DockerProxyURL: "http://proxy:2375",
 			},
@@ -148,6 +188,9 @@ SS_DOCKER_PROXY_URL=http://dotenv:2375
 	}
 	if got.PollInterval != defaultPollInterval {
 		t.Fatalf("unexpected poll interval: %s", got.PollInterval)
+	}
+	if got.ComposeTimeout != defaultComposeTimeout {
+		t.Fatalf("unexpected compose timeout: %s", got.ComposeTimeout)
 	}
 }
 

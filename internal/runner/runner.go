@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/rs/zerolog"
 )
 
@@ -28,10 +29,14 @@ func (t timeTicker) Stop() {
 
 // Runner orchestrates the main execution loop.
 type Runner struct {
-	logger        zerolog.Logger
-	pollInterval  time.Duration
-	tickerFactory func(time.Duration) Ticker
-	runOnce       func(context.Context) error
+	logger           zerolog.Logger
+	pollInterval     time.Duration
+	tickerFactory    func(time.Duration) Ticker
+	runOnce          func(context.Context) error
+	composeFetcher   compose.Fetcher
+	composeETag      string
+	composeHash      string
+	lastDesiredState *compose.DesiredState
 }
 
 // Option customizes runner behavior.
@@ -51,6 +56,13 @@ func WithRunOnce(runOnce func(context.Context) error) Option {
 	}
 }
 
+// WithComposeFetcher sets the compose fetcher used by the default RunOnce.
+func WithComposeFetcher(fetcher compose.Fetcher) Option {
+	return func(r *Runner) {
+		r.composeFetcher = fetcher
+	}
+}
+
 // New constructs a Runner with the given logger and poll interval.
 func New(logger zerolog.Logger, pollInterval time.Duration, opts ...Option) *Runner {
 	r := &Runner{
@@ -59,10 +71,8 @@ func New(logger zerolog.Logger, pollInterval time.Duration, opts ...Option) *Run
 		tickerFactory: func(d time.Duration) Ticker {
 			return timeTicker{ticker: time.NewTicker(d)}
 		},
-		runOnce: func(context.Context) error {
-			return nil
-		},
 	}
+	r.runOnce = r.defaultRunOnce
 
 	for _, opt := range opts {
 		opt(r)
@@ -101,4 +111,53 @@ func (r *Runner) Run(ctx context.Context) error {
 // RunOnce executes a single cycle of the runner.
 func (r *Runner) RunOnce(ctx context.Context) error {
 	return r.runOnce(ctx)
+}
+
+func (r *Runner) defaultRunOnce(ctx context.Context) error {
+	if r.composeFetcher == nil {
+		return nil
+	}
+
+	result, err := r.composeFetcher.Fetch(ctx, r.composeETag)
+	if err != nil {
+		return err
+	}
+
+	if result.ETag != "" {
+		r.composeETag = result.ETag
+	}
+
+	if result.NotModified {
+		r.logger.Debug().Msg("compose unchanged")
+		return nil
+	}
+
+	fingerprint, err := compose.Fingerprint(result.Body)
+	if err != nil {
+		return err
+	}
+	if fingerprint == r.composeHash {
+		r.logger.Debug().Msg("compose fingerprint unchanged")
+		return nil
+	}
+	r.composeHash = fingerprint
+
+	r.logger.Info().
+		Int("bytes", len(result.Body)).
+		Str("etag", result.ETag).
+		Str("last_modified", result.LastModified).
+		Str("fingerprint", fingerprint).
+		Msg("compose fetched")
+
+	desiredState, err := compose.ParseDesiredState(ctx, result.Body)
+	if err != nil {
+		return err
+	}
+	r.lastDesiredState = &desiredState
+
+	r.logger.Info().
+		Int("services", len(desiredState.Services)).
+		Msg("parsed desired state")
+
+	return nil
 }
