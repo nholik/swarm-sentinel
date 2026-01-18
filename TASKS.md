@@ -31,6 +31,11 @@
 - [ ] SS-004: Fetch remote compose file
 - [ ] SS-005: Fingerprinting desired state
 - [ ] SS-006: Compose parsing
+  - Parse service definitions: `image`, `replicas`
+  - Parse `configs` block per service (list of config names)
+  - Parse `secrets` block per service (list of secret names)
+  - Normalize external vs inline config/secret references
+  - Tests: validate parsing of configs/secrets from sample compose files
 
 ## Phase 3 — Swarm Integration
 > **Note:** Consider validating Docker connection (SS-007) early to fail fast before compose fetching.
@@ -39,6 +44,18 @@
 
 ## Phase 4 — Core Logic
 - [ ] SS-009: Health evaluation engine
+  - Evaluate replica count: desired vs running
+  - Evaluate image: expected vs deployed
+  - Evaluate config/secret attachment (see SS-009a)
+  - Aggregate service health into stack health
+- [ ] SS-009a: Config/secret drift detection
+  - Compare desired config names (from compose) vs actual (from Swarm API)
+  - Compare desired secret names (from compose) vs actual (from Swarm API)
+  - Detect drift types: `VERSION_MISMATCH`, `MISSING`, `EXTRA`
+  - Flag drift in service health status
+  - Include drift details in alert payloads
+  - Tests: unit tests for each drift type scenario
+  - Tests: integration test with mock Swarm API responses
 - [ ] SS-010: State persistence
 - [ ] SS-011: Transition detection
 
