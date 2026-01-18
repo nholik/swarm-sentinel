@@ -26,4 +26,7 @@ type Client interface {
 
 	// GetActualState retrieves the current state of services, optionally scoped to a stack.
 	GetActualState(ctx context.Context, stackName string) (*ActualState, error)
+
+	// Close releases resources associated with the client.
+	Close() error
 }

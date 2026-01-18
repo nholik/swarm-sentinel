@@ -233,6 +233,10 @@ func (f *fakeSwarmClient) Ping(ctx context.Context) error {
 	return nil
 }
 
+func (f *fakeSwarmClient) Close() error {
+	return nil
+}
+
 func (f *fakeSwarmClient) GetActualState(ctx context.Context, stackName string) (*swarm.ActualState, error) {
 	_ = ctx
 	f.calls++

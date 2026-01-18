@@ -27,11 +27,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     defaultPollInterval,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   defaultDockerProxyURL,
 				StackName:        "",
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -106,12 +108,14 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     defaultPollInterval,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   defaultDockerProxyURL,
 				StackName:        "",
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				SlackWebhookURL:  "https://hooks.slack.com/services/T00/B00/XXX",
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -124,11 +128,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     45 * time.Second,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   "http://proxy:2375",
 				StackName:        "",
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -140,11 +146,13 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     defaultPollInterval,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   defaultDockerProxyURL,
 				StackName:        "prod",
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -167,6 +175,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     defaultPollInterval,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   defaultDockerProxyURL,
 				StackName:        "",
@@ -175,6 +184,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSCA:      "/tmp/ca.pem",
 				DockerTLSCert:    "/tmp/cert.pem",
 				DockerTLSKey:     "/tmp/key.pem",
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -187,6 +197,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     defaultPollInterval,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   defaultDockerProxyURL,
 				StackName:        "",
@@ -195,6 +206,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSCA:      "/tmp/certs/ca.pem",
 				DockerTLSCert:    "/tmp/certs/cert.pem",
 				DockerTLSKey:     "/tmp/certs/key.pem",
+				LogLevel:         defaultLogLevel,
 			},
 		},
 		{
@@ -207,6 +219,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 			want: Config{
 				PollInterval:     defaultPollInterval,
 				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
 				ComposeURL:       "https://example.com/compose.yml",
 				DockerProxyURL:   defaultDockerProxyURL,
 				StackName:        "",
@@ -214,6 +227,59 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSVerify:  false,
 				DockerTLSCert:    "/tmp/cert.pem",
 				DockerTLSKey:     "/tmp/key.pem",
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "custom docker api timeout",
+			env: map[string]string{
+				envComposeURL:       "https://example.com/compose.yml",
+				envDockerAPITimeout: "60s",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: 60 * time.Second,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         defaultLogLevel,
+			},
+		},
+		{
+			name: "invalid docker api timeout",
+			env: map[string]string{
+				envComposeURL:       "https://example.com/compose.yml",
+				envDockerAPITimeout: "nope",
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero docker api timeout",
+			env: map[string]string{
+				envComposeURL:       "https://example.com/compose.yml",
+				envDockerAPITimeout: "0s",
+			},
+			wantErr: true,
+		},
+		{
+			name: "custom log level",
+			env: map[string]string{
+				envComposeURL: "https://example.com/compose.yml",
+				envLogLevel:   "debug",
+			},
+			want: Config{
+				PollInterval:     defaultPollInterval,
+				ComposeTimeout:   defaultComposeTimeout,
+				DockerAPITimeout: defaultDockerAPITimeout,
+				ComposeURL:       "https://example.com/compose.yml",
+				DockerProxyURL:   defaultDockerProxyURL,
+				StackName:        "",
+				DockerTLSEnabled: false,
+				DockerTLSVerify:  false,
+				LogLevel:         "debug",
 			},
 		},
 	}

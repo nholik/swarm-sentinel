@@ -5,8 +5,10 @@ go 1.24.0
 require (
 	github.com/compose-spec/compose-go/v2 v2.10.0
 	github.com/docker/docker v26.1.5+incompatible
+	github.com/docker/go-connections v0.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/rs/zerolog v1.33.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -14,7 +16,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/distribution/reference v0.5.0 // indirect
-	github.com/docker/go-connections v0.4.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

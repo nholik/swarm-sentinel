@@ -178,6 +178,10 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 		return nil
 	}
 
+	if r.lastDesiredState == nil {
+		r.logger.Warn().Msg("desired state not yet available, collecting actual state only")
+	}
+
 	actualState, err := r.swarmClient.GetActualState(ctx, r.stackName)
 	if err != nil {
 		return err

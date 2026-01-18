@@ -16,7 +16,7 @@ import (
 	"github.com/docker/go-connections/tlsconfig"
 )
 
-const defaultAPITimeout = 5 * time.Second
+const defaultAPITimeout = 30 * time.Second
 
 // TLSConfig describes the client TLS configuration.
 type TLSConfig struct {
@@ -129,6 +129,14 @@ func normalizeDockerHost(host string, tlsEnabled bool) (string, error) {
 		}
 		return host, nil
 	}
+}
+
+// Close releases resources associated with the Docker client.
+func (c *DockerClient) Close() error {
+	if c == nil || c.api == nil {
+		return nil
+	}
+	return c.api.Close()
 }
 
 // Ping validates connectivity to the Docker daemon.
@@ -261,6 +269,11 @@ func serviceModeAndReplicas(service swarmtypes.Service) (string, int) {
 	return "unknown", desired
 }
 
+// summarizeTasks counts running tasks and extracts config/secret names.
+// Note: During rolling updates, different tasks may have different configs/secrets
+// attached. This function aggregates all configs/secrets from running tasks,
+// which provides a complete picture but may include both old and new versions
+// during transitions.
 func summarizeTasks(tasks []swarmtypes.Task) (int, []string, []string) {
 	running := 0
 	configs := make(map[string]struct{})

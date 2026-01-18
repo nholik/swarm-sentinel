@@ -73,6 +73,9 @@ func ParseDesiredState(ctx context.Context, body []byte) (DesiredState, error) {
 
 		replicas := defaultServiceScale
 		if mode == globalDeployMode {
+			// Global mode replicas are set to 0 at parse time because the actual
+			// count depends on the number of nodes in the cluster, which is only
+			// known at runtime. The actual state uses ServiceStatus.DesiredTasks.
 			replicas = 0
 		} else if service.Deploy != nil && service.Deploy.Replicas != nil {
 			replicas = *service.Deploy.Replicas

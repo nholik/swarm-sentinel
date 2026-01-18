@@ -92,6 +92,28 @@
   - Tests: task filtering logic (running vs failed/pending)
   - Tests: config/secret extraction from task spec
 
+## Phase 3.5 — Multi-Stack Support
+- [ ] SS-007.5: Multi-stack compose mapping configuration
+  - Add optional `SS_COMPOSE_MAPPING_FILE` environment variable
+  - Create `internal/config/mapping.go` to parse YAML mapping files
+  - Implement smart path detection: `SS_COMPOSE_MAPPING_FILE` env var → `/run/configs/compose-mapping.yaml` (Swarm) → `/run/secrets/compose-mapping.yaml` → `./compose-mapping.yaml`
+  - Define `StackMapping` struct: `name`, `compose_url`, optional `timeout`
+  - Validate: unique stack names, non-empty names/URLs, valid URLs
+  - Backward compatible: if no mapping file found, use single `SS_COMPOSE_URL` + `SS_STACK_NAME` mode
+  - Tests: valid/invalid YAML, missing/duplicate names, file not found (fallback to single mode)
+  - Document YAML schema and Swarm deployment patterns in code comments
+
+- [ ] SS-008.5: Coordinator for multi-runner orchestration
+  - Create `internal/coordinator/coordinator.go` with `Coordinator` type
+  - Implement runner spawn logic: one `Runner` per stack mapping (or single runner if single-stack mode)
+  - Implement `Run(ctx)` lifecycle: parallel runner execution, context propagation, error handling
+  - Implement `Stop()` for graceful shutdown: wait for all runners, cleanup
+  - Add per-runner logging with stack name field for traceability
+  - Reuse single `SwarmClient` across all runners (shared Docker API connection)
+  - Handle partial failures: log errors per runner, continue other runners
+  - Update `main.go` to detect mode and instantiate either `Runner` (single) or `Coordinator` (multi)
+  - Tests: single-stack mode (backward compat), multi-stack coordination, graceful shutdown, error isolation
+
 ## Phase 4 — Core Logic
 - [ ] SS-009: Health evaluation engine
   - Evaluate replica count: desired vs running
