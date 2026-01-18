@@ -10,18 +10,18 @@ The system is intentionally polling-based, state-aware, and decoupled from deplo
 ## High-Level Architecture
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                     Docker Swarm Cluster                      │
-│                                                              │
-│  ┌─────────────── Manager Node ────────────────┐             │
+│                                                               │
+│  ┌─────────────── Manager Node ─────────────────┐             │
 │  │                                              │             │
 │  │  ┌──────────────────────────────┐            │             │
-│  │  │ Docker Daemon                 │            │             │
-│  │  │                               │            │             │
-│  │  │  /var/run/docker.sock         │◄──────┐   │             │
-│  │  └──────────────────────────────┘       │   │             │
+│  │  │ Docker Daemon                │            │             │
+│  │  │                              │            │             │
+│  │  │  /var/run/docker.sock        │ ◄──────┐   │             │
+│  │  └──────────────────────────────┘        │   │             │
 │  │                                          │   │             │
-│  │  ┌──────────────────────────────┐       │   │             │
+│  │  ┌───────────────────────────────┐       │   │             │
 │  │  │ docker-socket-proxy           │       │   │             │
 │  │  │ (read-only API filter)        │       │   │             │
 │  │  │                               │       │   │             │
@@ -31,22 +31,22 @@ The system is intentionally polling-based, state-aware, and decoupled from deplo
 │  │  │  POST=0                       │       │   │             │
 │  │  │                               │       │   │             │
 │  │  │  tcp://proxy:2375             │───────┘   │             │
-│  │  └──────────────────────────────┘            │             │
-│  │               ▲                               │             │
-│  │               │ HTTP (private overlay net)    │             │
-│  │               │                               │             │
+│  │  └───────────────────────────────┘           │             │
+│  │               ▲                              │             │
+│  │               │ HTTP (private overlay net)   │             │
+│  │               │                              │             │
 │  │  ┌──────────────────────────────┐            │             │
-│  │  │ swarm-sentinel                │            │             │
-│  │  │ (Go static binary)            │            │             │
-│  │  │                               │            │             │
-│  │  │  - Polls desired state        │            │             │
-│  │  │  - Reads Swarm state          │            │             │
-│  │  │  - Evaluates health           │            │             │
-│  │  │  - Persists last state        │            │             │
-│  │  │  - Sends Slack alerts         │            │             │
+│  │  │ swarm-sentinel               │            │             │
+│  │  │ (Go static binary)           │            │             │
+│  │  │                              │            │             │
+│  │  │  - Polls desired state       │            │             │
+│  │  │  - Reads Swarm state         │            │             │
+│  │  │  - Evaluates health          │            │             │
+│  │  │  - Persists last state       │            │             │
+│  │  │  - Sends Slack alerts        │            │             │
 │  │  └──────────────────────────────┘            │             │
 │  │                                              │             │
 │  └──────────────────────────────────────────────┘             │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
 ```
