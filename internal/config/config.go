@@ -27,6 +27,7 @@ const (
 	envDockerTLSKey       = "SS_DOCKER_TLS_KEY"
 	envDockerTLSVerify    = "SS_DOCKER_TLS_VERIFY"
 	envLogLevel           = "SS_LOG_LEVEL"
+	envStatePath          = "SS_STATE_PATH"
 
 	envDockerTLSVerifyCompat = "DOCKER_TLS_VERIFY"
 	envDockerCertPathCompat  = "DOCKER_CERT_PATH"
@@ -44,6 +45,7 @@ const (
 	defaultDockerAPITimeout = 30 * time.Second
 	defaultDockerProxyURL   = "http://localhost:2375"
 	defaultLogLevel         = "info"
+	defaultStatePath        = "/var/lib/swarm-sentinel/state.json"
 )
 
 // Config describes runtime configuration loaded from the environment.
@@ -61,6 +63,7 @@ type Config struct {
 	DockerTLSCert    string
 	DockerTLSKey     string
 	LogLevel         string
+	StatePath        string
 }
 
 // Load reads configuration from environment variables and a local .env file if present.
@@ -76,6 +79,7 @@ func Load() (Config, error) {
 		DockerAPITimeout: defaultDockerAPITimeout,
 		DockerProxyURL:   defaultDockerProxyURL,
 		LogLevel:         defaultLogLevel,
+		StatePath:        defaultStatePath,
 	}
 
 	if value, ok := lookupTrimmed(envPollInterval); ok {
@@ -129,6 +133,12 @@ func Load() (Config, error) {
 
 	if value, ok := lookupTrimmed(envLogLevel); ok {
 		cfg.LogLevel = value
+	}
+	if value, ok := lookupTrimmed(envStatePath); ok {
+		if value == "" {
+			return Config{}, fmt.Errorf("%s must not be empty", envStatePath)
+		}
+		cfg.StatePath = value
 	}
 
 	tlsVerify, tlsVerifySet, err := lookupBool(envDockerTLSVerify)

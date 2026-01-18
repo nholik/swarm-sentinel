@@ -7,6 +7,7 @@ import (
 	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/nholik/swarm-sentinel/internal/config"
 	"github.com/nholik/swarm-sentinel/internal/runner"
+	"github.com/nholik/swarm-sentinel/internal/state"
 	"github.com/nholik/swarm-sentinel/internal/swarm"
 	"github.com/rs/zerolog"
 )
@@ -18,6 +19,8 @@ type Coordinator struct {
 	cfg          config.Config
 	mappings     []config.StackMapping
 	swarmClient  swarm.Client
+	stateStore   state.Store
+	stateMu      *sync.Mutex
 	runners      map[string]*runner.Runner
 	runnerErrors map[string]error
 	cancel       context.CancelFunc
@@ -25,15 +28,32 @@ type Coordinator struct {
 	mu           sync.RWMutex
 }
 
+// Option customizes coordinator behavior.
+type Option func(*Coordinator)
+
 // New constructs a Coordinator with the given configuration and stack mappings.
-func New(logger zerolog.Logger, cfg config.Config, mappings []config.StackMapping, swarmClient swarm.Client) *Coordinator {
-	return &Coordinator{
+func New(logger zerolog.Logger, cfg config.Config, mappings []config.StackMapping, swarmClient swarm.Client, opts ...Option) *Coordinator {
+	coord := &Coordinator{
 		logger:       logger,
 		cfg:          cfg,
 		mappings:     mappings,
 		swarmClient:  swarmClient,
 		runners:      make(map[string]*runner.Runner),
 		runnerErrors: make(map[string]error),
+	}
+
+	for _, opt := range opts {
+		opt(coord)
+	}
+
+	return coord
+}
+
+// WithStateStore sets the shared state store for all runners.
+func WithStateStore(store state.Store, lock *sync.Mutex) Option {
+	return func(c *Coordinator) {
+		c.stateStore = store
+		c.stateMu = lock
 	}
 }
 
@@ -118,12 +138,19 @@ func (c *Coordinator) spawnRunner(ctx context.Context, wg *sync.WaitGroup, mappi
 	}
 
 	// Create runner for this stack
-	r := runner.New(
-		stackLogger,
-		c.cfg.PollInterval,
+	opts := []runner.Option{
 		runner.WithComposeFetcher(fetcher),
 		runner.WithSwarmClient(c.swarmClient),
 		runner.WithStackName(mapping.Name),
+	}
+	if c.stateStore != nil {
+		opts = append(opts, runner.WithStateStore(c.stateStore, c.stateMu))
+	}
+
+	r := runner.New(
+		stackLogger,
+		c.cfg.PollInterval,
+		opts...,
 	)
 
 	c.mu.Lock()

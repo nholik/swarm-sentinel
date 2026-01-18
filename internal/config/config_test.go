@@ -35,6 +35,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -50,6 +51,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -145,6 +147,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSVerify:  false,
 				SlackWebhookURL:  "https://hooks.slack.com/services/T00/B00/XXX",
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -164,6 +167,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -182,6 +186,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -214,6 +219,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSCert:    "/tmp/cert.pem",
 				DockerTLSKey:     "/tmp/key.pem",
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -236,6 +242,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSCert:    "/tmp/certs/cert.pem",
 				DockerTLSKey:     "/tmp/certs/key.pem",
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -257,6 +264,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSCert:    "/tmp/cert.pem",
 				DockerTLSKey:     "/tmp/key.pem",
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -275,6 +283,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				LogLevel:         defaultLogLevel,
+				StatePath:        defaultStatePath,
 			},
 		},
 		{
@@ -309,6 +318,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 				DockerTLSEnabled: false,
 				DockerTLSVerify:  false,
 				LogLevel:         "debug",
+				StatePath:        defaultStatePath,
 			},
 		},
 	}

@@ -32,6 +32,8 @@ SS_STACK_NAME=prod  # optional; empty means all services
 ```
 
 Use this for simple deployments where a single sentinel instance watches one stack.
+When `SS_STACK_NAME` is empty, swarm-sentinel still evaluates only the services
+defined in the compose file; other Swarm services are ignored for health.
 
 ### Multi-Stack Mode (Swarm-Native)
 
@@ -68,6 +70,7 @@ Each stack runs independently with isolated health tracking and state management
 - `SS_POLL_INTERVAL` (optional): Poll interval for all sentinel cycles (default: `30s`)
 - `SS_DOCKER_PROXY_URL` (optional): Docker API URL (socket proxy recommended, default: `http://localhost:2375`)
 - `SS_DOCKER_API_TIMEOUT` (optional): Timeout for Docker API calls (default: `30s`)
+- `SS_STATE_PATH` (optional): Path to persisted state JSON for transitions (default: `/var/lib/swarm-sentinel/state.json`)
 - `SS_LOG_LEVEL` (optional): Log level - trace, debug, info, warn, error, fatal, panic (default: `info`)
 - `SS_DOCKER_TLS_VERIFY` (optional): Enable TLS when connecting to the Docker API host (default: `false`)
 - `SS_DOCKER_TLS_CA` (optional): Path to CA certificate for Docker API TLS
