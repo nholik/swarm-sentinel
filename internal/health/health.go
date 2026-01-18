@@ -27,10 +27,14 @@ type DriftDetail struct {
 
 // ServiceHealth captures health evaluation output for a service.
 type ServiceHealth struct {
-	Name    string
-	Status  ServiceStatus
-	Reasons []string
-	Drift   []DriftDetail
+	Name            string
+	Status          ServiceStatus
+	Reasons         []string
+	Drift           []DriftDetail
+	DesiredImage    string
+	ActualImage     string
+	DesiredReplicas int
+	RunningReplicas int
 }
 
 // StackHealth summarizes the health for a stack.

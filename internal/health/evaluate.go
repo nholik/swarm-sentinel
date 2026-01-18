@@ -26,9 +26,11 @@ func EvaluateStackHealth(desired compose.DesiredState, actual *swarm.ActualState
 		actualService, ok := actual.Services[name]
 		if !ok {
 			health := ServiceHealth{
-				Name:    name,
-				Status:  StatusFailed,
-				Reasons: []string{"missing service"},
+				Name:            name,
+				Status:          StatusFailed,
+				Reasons:         []string{"missing service"},
+				DesiredImage:    swarm.NormalizeImage(desiredService.Image),
+				DesiredReplicas: desiredService.Replicas,
 			}
 			result.Services[name] = health
 			result.Status = worsenStatus(result.Status, health.Status)
@@ -45,9 +47,12 @@ func EvaluateStackHealth(desired compose.DesiredState, actual *swarm.ActualState
 				continue
 			}
 			health := ServiceHealth{
-				Name:    name,
-				Status:  StatusDegraded,
-				Reasons: []string{"extra service"},
+				Name:            name,
+				Status:          StatusDegraded,
+				Reasons:         []string{"extra service"},
+				ActualImage:     swarm.NormalizeImage(actualService.Image),
+				DesiredReplicas: actualService.DesiredReplicas,
+				RunningReplicas: actualService.RunningReplicas,
 				Drift: []DriftDetail{
 					{
 						Kind:     DriftExtraService,
@@ -72,6 +77,8 @@ func evaluateService(name string, desired compose.DesiredService, actual swarm.A
 
 	desiredImage := swarm.NormalizeImage(desired.Image)
 	actualImage := swarm.NormalizeImage(actual.Image)
+	health.DesiredImage = desiredImage
+	health.ActualImage = actualImage
 	if desiredImage != actualImage {
 		health.Status = worsenStatus(health.Status, StatusDegraded)
 		health.Reasons = append(health.Reasons, fmt.Sprintf("image mismatch: want %s got %s", desiredImage, actualImage))
@@ -81,6 +88,8 @@ func evaluateService(name string, desired compose.DesiredService, actual swarm.A
 	if desired.Mode == "global" {
 		desiredReplicas = actual.DesiredReplicas
 	}
+	health.DesiredReplicas = desiredReplicas
+	health.RunningReplicas = actual.RunningReplicas
 
 	if desiredReplicas > 0 {
 		switch {

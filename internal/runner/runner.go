@@ -3,10 +3,14 @@ package runner
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
+	"github.com/nholik/swarm-sentinel/internal/health"
+	"github.com/nholik/swarm-sentinel/internal/state"
 	"github.com/nholik/swarm-sentinel/internal/swarm"
+	"github.com/nholik/swarm-sentinel/internal/transition"
 	"github.com/rs/zerolog"
 )
 
@@ -41,6 +45,8 @@ type Runner struct {
 	composeHash      string
 	lastDesiredState *compose.DesiredState
 	lastActualState  *swarm.ActualState
+	stateStore       state.Store
+	stateMu          *sync.Mutex
 }
 
 // Option customizes runner behavior.
@@ -81,6 +87,14 @@ func WithStackName(name string) Option {
 	}
 }
 
+// WithStateStore enables state persistence for transitions.
+func WithStateStore(store state.Store, lock *sync.Mutex) Option {
+	return func(r *Runner) {
+		r.stateStore = store
+		r.stateMu = lock
+	}
+}
+
 // New constructs a Runner with the given logger and poll interval.
 func New(logger zerolog.Logger, pollInterval time.Duration, opts ...Option) *Runner {
 	r := &Runner{
@@ -94,6 +108,9 @@ func New(logger zerolog.Logger, pollInterval time.Duration, opts ...Option) *Run
 
 	for _, opt := range opts {
 		opt(r)
+	}
+	if r.stateStore != nil && r.stateMu == nil {
+		r.stateMu = &sync.Mutex{}
 	}
 
 	return r
@@ -205,5 +222,102 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 	}
 	event.Msg("collected actual state")
 
+	if r.stateStore != nil && r.lastDesiredState != nil {
+		if err := r.evaluateAndPersist(ctx); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func (r *Runner) evaluateAndPersist(ctx context.Context) error {
+	stackScoped := r.stackName != ""
+	stackHealth := health.EvaluateStackHealth(*r.lastDesiredState, r.lastActualState, stackScoped)
+
+	stackKey := r.stackKey()
+	now := time.Now().UTC()
+
+	var snapshot *state.StackSnapshot
+	err := r.withStateLock(func() error {
+		loaded, err := r.stateStore.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if existing, ok := loaded.Stacks[stackKey]; ok {
+			copySnapshot := existing
+			snapshot = &copySnapshot
+		}
+
+		if loaded.Stacks == nil {
+			loaded.Stacks = map[string]state.StackSnapshot{}
+		}
+		loaded.Stacks[stackKey] = state.StackSnapshot{
+			DesiredFingerprint: r.composeHash,
+			Services:           stackHealth.Services,
+			EvaluatedAt:        now,
+		}
+
+		return r.stateStore.Save(ctx, loaded)
+	})
+	if err != nil {
+		return err
+	}
+
+	transitions := transition.DetectServiceTransitions(snapshot, stackHealth)
+	for _, change := range transitions {
+		event := r.logger.Info().
+			Str("service", change.Name).
+			Str("previous_status", string(change.PreviousStatus)).
+			Str("current_status", string(change.CurrentStatus)).
+			Strs("reasons", change.Reasons)
+
+		switch change.CurrentStatus {
+		case health.StatusFailed:
+			event = r.logger.Error().
+				Str("service", change.Name).
+				Str("previous_status", string(change.PreviousStatus)).
+				Str("current_status", string(change.CurrentStatus)).
+				Strs("reasons", change.Reasons)
+		case health.StatusDegraded:
+			event = r.logger.Warn().
+				Str("service", change.Name).
+				Str("previous_status", string(change.PreviousStatus)).
+				Str("current_status", string(change.CurrentStatus)).
+				Strs("reasons", change.Reasons)
+		}
+
+		if change.ReplicaChange != nil {
+			event = event.Int("desired_replicas", change.ReplicaChange.CurrentDesired).
+				Int("running_replicas", change.ReplicaChange.CurrentRunning).
+				Int("desired_delta", change.ReplicaChange.DesiredDelta).
+				Int("running_delta", change.ReplicaChange.RunningDelta)
+		}
+		if change.ImageChange != nil {
+			event = event.Str("desired_image", change.ImageChange.CurrentDesired).
+				Str("actual_image", change.ImageChange.CurrentActual)
+		}
+		if len(change.Drift) > 0 {
+			event = event.Interface("drift", change.Drift)
+		}
+		event.Msg("service transition detected")
+	}
+
+	return nil
+}
+
+func (r *Runner) withStateLock(fn func() error) error {
+	if r.stateMu == nil {
+		return fn()
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	return fn()
+}
+
+func (r *Runner) stackKey() string {
+	if r.stackName != "" {
+		return r.stackName
+	}
+	return "default"
 }

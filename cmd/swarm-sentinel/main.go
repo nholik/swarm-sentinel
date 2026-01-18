@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
@@ -11,6 +12,7 @@ import (
 	"github.com/nholik/swarm-sentinel/internal/coordinator"
 	"github.com/nholik/swarm-sentinel/internal/logging"
 	"github.com/nholik/swarm-sentinel/internal/runner"
+	"github.com/nholik/swarm-sentinel/internal/state"
 	"github.com/nholik/swarm-sentinel/internal/swarm"
 )
 
@@ -33,6 +35,7 @@ func main() {
 		Bool("docker_tls_enabled", cfg.DockerTLSEnabled).
 		Dur("poll_interval", cfg.PollInterval).
 		Str("log_level", cfg.LogLevel).
+		Str("state_path", cfg.StatePath).
 		Str("slack_webhook", secretStatus(cfg.SlackWebhookURL)).
 		Msg("config loaded")
 
@@ -61,6 +64,9 @@ func main() {
 		logger.Fatal().Err(err).Msg("docker api unreachable")
 	}
 
+	stateStore := state.NewFileStore(cfg.StatePath, logger)
+	stateMu := &sync.Mutex{}
+
 	// Detect mode: multi-stack or single-stack
 	mappingPath, err := config.FindMappingFile()
 	if err != nil {
@@ -79,7 +85,13 @@ func main() {
 			Str("mapping_file", mappingPath).
 			Msg("multi-stack mode")
 
-		coord := coordinator.New(logger, cfg, mappings, swarmClient)
+		coord := coordinator.New(
+			logger,
+			cfg,
+			mappings,
+			swarmClient,
+			coordinator.WithStateStore(stateStore, stateMu),
+		)
 		if err := coord.Run(ctx); err != nil {
 			logger.Fatal().Err(err).Msg("coordinator exited with error")
 		}
@@ -105,6 +117,7 @@ func main() {
 			runner.WithComposeFetcher(composeFetcher),
 			runner.WithSwarmClient(swarmClient),
 			runner.WithStackName(cfg.StackName),
+			runner.WithStateStore(stateStore, stateMu),
 		)
 		if err := r.Run(ctx); err != nil {
 			logger.Fatal().Err(err).Msg("runner exited with error")
