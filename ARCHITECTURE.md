@@ -9,6 +9,8 @@ The system is intentionally polling-based, state-aware, and decoupled from deplo
 
 ## High-Level Architecture
 
+swarm-sentinel only needs a Docker API host. A socket proxy is optional and configured externally (https://github.com/Tecnativa/docker-socket-proxy).
+
 ```text
 ┌───────────────────────────────────────────────────────────────┐
 │                     Docker Swarm Cluster                      │
@@ -22,7 +24,7 @@ The system is intentionally polling-based, state-aware, and decoupled from deplo
 │  │  └──────────────────────────────┘        │   │             │
 │  │                                          │   │             │
 │  │  ┌───────────────────────────────┐       │   │             │
-│  │  │ docker-socket-proxy           │       │   │             │
+│  │  │ docker-socket-proxy (optional)│       │   │             │
 │  │  │ (read-only API filter)        │       │   │             │
 │  │  │                               │       │   │             │
 │  │  │  SERVICES=1                   │       │   │             │
@@ -67,9 +69,9 @@ The system is intentionally polling-based, state-aware, and decoupled from deplo
 
 ### 3. Read-Only by Construction
 
-- No direct access to `/var/run/docker.sock`
-- Docker API access is filtered via `docker-socket-proxy`
-- No mutation APIs exposed
+- Uses read-only Docker API endpoints only
+- A read-only socket proxy is recommended but external to the project (https://github.com/Tecnativa/docker-socket-proxy)
+- Direct `/var/run/docker.sock` access is not required
 
 ### 4. Single Observer
 
@@ -125,7 +127,7 @@ This convention is **not enforced** by swarm-sentinel but is expected to be foll
 
 ## Actual State Model
 
-- Read from Docker Swarm API via socket proxy
+- Read from Docker Swarm API via a configurable Docker API host (proxy optional)
 - Services and tasks only
 - No mutation or exec capabilities
 

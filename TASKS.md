@@ -8,7 +8,7 @@
   - Add `.gitignore` for Go build artifacts
   - Add `Makefile` targets: `build`, `test`, `lint` (placeholders ok)
 - [x] SS-002: Configuration loading
-  - Define config schema (env + `.env`): poll interval, compose URL, Slack webhook, Docker proxy URL
+  - Define config schema (env + `.env`): poll interval, compose URL, Slack webhook, Docker API URL (`SS_DOCKER_PROXY_URL`)
   - Add `internal/config` package to load config with defaults and validation
   - Load `.env` via `github.com/joho/godotenv` if present, but prefer injected env vars (env wins over `.env`)
   - Ensure config loading is the first step in `main` and logs effective settings (redact secrets)
@@ -57,10 +57,11 @@
 ## Phase 3 — Swarm Integration
 > **Note:** Consider validating Docker connection (SS-007) early to fail fast before compose fetching.
 
-- [ ] SS-007: Docker client via socket proxy
+- [ ] SS-007: Docker client via official Go SDK
   - Create `internal/swarm` package for Docker client interactions
   - Define `SwarmClient` interface for testability (mock Swarm API in tests)
   - Initialize Docker client with configurable host (`SS_DOCKER_PROXY_URL`)
+  - Use the Docker Go SDK with API version negotiation
   - Validate connection on startup (ping or info call) — fail fast if unreachable
   - Set reasonable timeouts for API calls
   - Tests: connection validation success/failure
@@ -69,6 +70,7 @@
 - [ ] SS-008: Actual state collection
   - Implement `GetServices(ctx) ([]SwarmService, error)` to list Swarm services
   - Implement `GetTasks(ctx, serviceID) ([]SwarmTask, error)` to get tasks per service
+  - Use Docker Go SDK service/task list APIs (`ServiceList`, `TaskList`)
   - Define `ActualState` struct mirroring `DesiredState` structure:
     - Service name → image, running replicas, attached configs/secrets
   - Filter tasks by state (only count `running` tasks as healthy)

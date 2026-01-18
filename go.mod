@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/compose-spec/compose-go/v2 v2.10.0
+	github.com/docker/docker v26.1.5+incompatible
 	github.com/joho/godotenv v1.5.1
 	github.com/rs/zerolog v1.33.0
 )
