@@ -113,17 +113,9 @@ Desired state is a remotely stored `docker-compose.yml`, typically produced duri
 
 ### Config and Secret Naming Convention
 
-swarm-sentinel relies on an **external naming convention** for configs and secrets:
-
-```
-<name>_v<version>
-```
-
-**Examples:**
-- `app_config_v3`
-- `db_password_v12`
-
-This convention is **not enforced** by swarm-sentinel but is expected to be followed by deployment tooling. swarm-sentinel compares the **exact name** from the compose file against the names attached to running services in Swarm.
+swarm-sentinel does **not** enforce a naming convention for configs or secrets.
+It compares the **exact names** in the compose file against names attached to running
+services in Swarm. Any mismatch is treated as drift, regardless of versioning scheme.
 
 ---
 
@@ -154,6 +146,10 @@ Rule ordering is deterministic and explicit.
 - Else any `DEGRADED` → stack `DEGRADED`
 - Else `OK`
 
+When stack-scoped (`SS_STACK_NAME` set or mapping mode), services that exist in Swarm
+but are missing from the compose file are treated as `DEGRADED`. In unscoped mode,
+services not present in the compose file are ignored.
+
 ---
 
 ## Config and Secret Drift Detection
@@ -175,7 +171,6 @@ swarm-sentinel compares:
 
 | Type              | Description                                           |
 |-------------------|-------------------------------------------------------|
-| `VERSION_MISMATCH`| Attached config/secret has different version suffix   |
 | `MISSING`         | Expected config/secret not attached to service        |
 | `EXTRA`           | Unexpected config/secret attached (not in compose)    |
 
@@ -183,27 +178,27 @@ swarm-sentinel compares:
 
 Config/secret drift contributes to service health:
 
-- Any drift → service marked as `DEGRADED` (configurable)
-- Critical secrets missing → service marked as `FAILED` (optional)
+- Missing config/secret → service marked as `FAILED`
+- Extra config/secret → service marked as `DEGRADED`
 
 ### Limitations
 
 - swarm-sentinel does **not** inspect config/secret **content**
 - Only names are compared
-- Relies on naming convention being followed upstream
+- No version parsing or normalization is performed
 
 ---
 
 ## Alerting
 
-Alerts are sent **only on health transitions**:
+Alerts are sent **only on service-level health transitions**:
 
 | Transition                   | Alert Type |
 |------------------------------|------------|
 | `OK` → `DEGRADED` / `FAILED` | Failure    |
 | `FAILED` / `DEGRADED` → `OK` | Recovery   |
 
-No repeated alerts for unchanged state.
+No repeated alerts for unchanged state. Stack health is used for summary/logging only.
 
 ---
 

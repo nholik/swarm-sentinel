@@ -6,6 +6,9 @@ High value, improves correctness.
 ## Convergence Time Warnings
 Detect deploys that never stabilize.
 
+## Config/Secret Version Drift Detection
+Classify versioned config/secret mismatches beyond exact-name compares.
+
 ## SQLite State Store
 Persist timestamps and limited history.
 

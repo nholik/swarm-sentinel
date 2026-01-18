@@ -115,21 +115,42 @@
   - Tests: single-stack mode (backward compat), multi-stack coordination, graceful shutdown, error isolation
 
 ## Phase 4 — Core Logic
-- [ ] SS-009: Health evaluation engine
-  - Evaluate replica count: desired vs running
-  - Evaluate image: expected vs deployed
-  - Evaluate config/secret attachment (see SS-009a)
-  - Aggregate service health into stack health
-- [ ] SS-009a: Config/secret drift detection
-  - Compare desired config names (from compose) vs actual (from Swarm API)
-  - Compare desired secret names (from compose) vs actual (from Swarm API)
-  - Detect drift types: `VERSION_MISMATCH`, `MISSING`, `EXTRA`
-  - Flag drift in service health status
-  - Include drift details in alert payloads
-  - Tests: unit tests for each drift type scenario
-  - Tests: integration test with mock Swarm API responses
+- [ ] SS-009: Service health evaluation + config/secret drift detection
+  - Create `internal/health` package with models:
+    - `ServiceStatus` (`OK`, `DEGRADED`, `FAILED`)
+    - `ServiceHealth` (service name, status, reasons, drift details)
+    - `StackHealth` (summary status + per-service map)
+    - `DriftDetail` (kind: `MISSING`, `EXTRA`, `EXTRA_SERVICE`)
+  - Evaluate per-service health by comparing `compose.DesiredState` vs `swarm.ActualState`:
+    - Service in desired but missing in actual → `FAILED` (reason: missing service)
+    - Service in actual but missing in desired (only when stack-scoped) → `DEGRADED` + `EXTRA_SERVICE` drift detail
+      - When not stack-scoped, ignore services not in the compose file
+    - Replicas: replicated mode compare desired vs running; global mode compare desired (Swarm) vs running
+      - Running == 0 and desired > 0 → `FAILED`
+      - Running < desired and > 0 → `DEGRADED`
+      - Running > desired → `DEGRADED`
+    - Image: compare desired vs actual using `swarm.NormalizeImage`; mismatch → `DEGRADED`
+    - Configs/secrets: compare desired list vs actual list (exact name match only)
+      - Missing config/secret → `FAILED`
+      - Extra config/secret → `DEGRADED`
+  - Aggregate stack health (FAILED > DEGRADED > OK) for logging/summary (alerts are service-level)
+  - Include drift details in health output for later alert payload shaping
+  - Tests: per-rule unit tests (replicas, image, missing/extra services, missing configs/secrets)
+  - Tests: drift-type classification for missing/extra config/secret
 - [ ] SS-010: State persistence
+  - Add `SS_STATE_PATH` config (default `/var/lib/swarm-sentinel/state.json`)
+  - Create `internal/state` package with a store interface designed for future SQLite backing
+  - Persist per-stack snapshots: desired fingerprint, service health map, last evaluation time
+  - JSON file store implementation:
+    - Ensure directory exists; write atomically (temp + rename)
+    - Handle missing/corrupt state by starting fresh (log warning)
+  - Tests: read/write roundtrip, missing file, corrupted JSON, multi-stack separation
 - [ ] SS-011: Transition detection
+  - Compare current service health against persisted snapshots; emit events for transitions
+  - Service-level transitions only (stack health used for summary/logging)
+  - First run: emit alerts only for non-OK services; OK services are silent
+  - Include change details in transition payloads (replica deltas, image mismatch, drift details)
+  - Tests: first-run behavior, no-op transitions, mixed-service transitions
 
 ## Phase 5 — Outputs
 - [ ] SS-012: Slack notifier
