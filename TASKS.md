@@ -28,14 +28,31 @@
   - Validate optional `SlackWebhookURL` format when provided
 
 ## Phase 2 — Inputs
-- [ ] SS-004: Fetch remote compose file
-- [ ] SS-005: Fingerprinting desired state
-- [ ] SS-006: Compose parsing
-  - Parse service definitions: `image`, `replicas`
-  - Parse `configs` block per service (list of config names)
-  - Parse `secrets` block per service (list of secret names)
-  - Normalize external vs inline config/secret references
-  - Tests: validate parsing of configs/secrets from sample compose files
+- [x] SS-004: Fetch remote compose file
+  - Define a `ComposeFetcher` (or similar) interface to decouple HTTP retrieval from callers
+  - Implement HTTP GET fetch with configurable URL and timeout
+  - Support optional `ETag` / `If-None-Match` handling to avoid redundant downloads
+  - Validate response: 200 OK with non-empty body, reject other status codes
+  - Limit read size to a sane max (e.g., a few MB) to avoid runaway payloads
+  - Return raw bytes plus metadata (etag, last-modified) for later fingerprinting
+  - Tests: table-driven unit tests for status handling, empty body, size limit, and ETag reuse
+- [x] SS-005: Fingerprinting desired state
+  - Add a fingerprint helper that computes a SHA-256 hash of the compose bytes
+  - Return the fingerprint as a hex string alongside compose metadata
+  - Store the last fingerprint in-memory to detect changes between polls
+  - Skip downstream processing when the fingerprint matches the previous value
+  - Log the fingerprint on change for traceability
+  - Tests: same input yields same fingerprint; different input yields different fingerprint; empty input rejected
+- [x] SS-006: Compose parsing
+  - Use `compose-go` for Compose spec parsing
+  - Parse `services` entries and required `image`
+  - Parse `deploy.replicas` with default (e.g., 1); decide behavior for `deploy.mode: global`
+  - Parse service `configs` and `secrets` (short and long syntax)
+  - Normalize config/secret names via top-level `configs`/`secrets` (handle `external: true` and `name`)
+  - Decide behavior for missing/unknown config/secret references (error vs ignore)
+  - Return a normalized desired-state struct (service name -> image/replicas/configs/secrets)
+  - Tests: invalid YAML, missing `services`, missing `image`, replicas defaults
+  - Tests: configs/secrets short+long syntax, external name mapping, inline definitions
 
 ## Phase 3 — Swarm Integration
 > **Note:** Consider validating Docker connection (SS-007) early to fail fast before compose fetching.

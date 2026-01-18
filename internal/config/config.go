@@ -14,18 +14,21 @@ import (
 const (
 	envPollInterval    = "SS_POLL_INTERVAL"
 	envComposeURL      = "SS_COMPOSE_URL"
+	envComposeTimeout  = "SS_COMPOSE_TIMEOUT"
 	envSlackWebhookURL = "SS_SLACK_WEBHOOK_URL"
 	envDockerProxyURL  = "SS_DOCKER_PROXY_URL"
 )
 
 const (
 	defaultPollInterval   = 30 * time.Second
+	defaultComposeTimeout = 10 * time.Second
 	defaultDockerProxyURL = "http://localhost:2375"
 )
 
 // Config describes runtime configuration loaded from the environment.
 type Config struct {
 	PollInterval    time.Duration
+	ComposeTimeout  time.Duration
 	ComposeURL      string
 	SlackWebhookURL string
 	DockerProxyURL  string
@@ -40,6 +43,7 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		PollInterval:   defaultPollInterval,
+		ComposeTimeout: defaultComposeTimeout,
 		DockerProxyURL: defaultDockerProxyURL,
 	}
 
@@ -56,6 +60,17 @@ func Load() (Config, error) {
 
 	if value, ok := lookupTrimmed(envComposeURL); ok {
 		cfg.ComposeURL = value
+	}
+
+	if value, ok := lookupTrimmed(envComposeTimeout); ok {
+		timeout, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envComposeTimeout, err)
+		}
+		if timeout <= 0 {
+			return Config{}, fmt.Errorf("%s must be greater than zero", envComposeTimeout)
+		}
+		cfg.ComposeTimeout = timeout
 	}
 
 	if value, ok := lookupTrimmed(envSlackWebhookURL); ok {
