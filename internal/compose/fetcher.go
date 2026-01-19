@@ -64,9 +64,12 @@ func WithRetryDelay(d time.Duration) HTTPFetcherOption {
 }
 
 // NewHTTPFetcher constructs an HTTPFetcher with the given URL and timeout.
-func NewHTTPFetcher(url string, timeout time.Duration, maxBytes int64, opts ...HTTPFetcherOption) (*HTTPFetcher, error) {
-	if strings.TrimSpace(url) == "" {
+func NewHTTPFetcher(composeURL string, timeout time.Duration, maxBytes int64, opts ...HTTPFetcherOption) (*HTTPFetcher, error) {
+	if strings.TrimSpace(composeURL) == "" {
 		return nil, errors.New("compose url must not be empty")
+	}
+	if !strings.HasPrefix(composeURL, "http://") && !strings.HasPrefix(composeURL, "https://") {
+		return nil, errors.New("compose url must use http or https scheme")
 	}
 	if timeout <= 0 {
 		return nil, errors.New("timeout must be greater than zero")
@@ -76,7 +79,7 @@ func NewHTTPFetcher(url string, timeout time.Duration, maxBytes int64, opts ...H
 	}
 
 	f := &HTTPFetcher{
-		url: url,
+		url: composeURL,
 		client: &http.Client{
 			Timeout: timeout,
 		},

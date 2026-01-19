@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 func TestDockerClientPingSuccess(t *testing.T) {
@@ -21,7 +23,7 @@ func TestDockerClientPingSuccess(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := NewDockerClient(server.URL, 2*time.Second, TLSConfig{})
+	client, err := NewDockerClient(server.URL, 2*time.Second, TLSConfig{}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewDockerClient error: %v", err)
 	}
@@ -39,7 +41,7 @@ func TestDockerClientPingFailure(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := NewDockerClient(server.URL, 2*time.Second, TLSConfig{})
+	client, err := NewDockerClient(server.URL, 2*time.Second, TLSConfig{}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewDockerClient error: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestNewDockerClient_TLSMissingCerts(t *testing.T) {
 		Enabled: true,
 		Verify:  true,
 		CAFile:  "/tmp/ca.pem",
-	})
+	}, zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error for missing cert/key")
 	}
@@ -70,7 +72,7 @@ func TestNewDockerClient_TLSMissingCAWhenVerify(t *testing.T) {
 		Verify:   true,
 		CertFile: "/tmp/cert.pem",
 		KeyFile:  "/tmp/key.pem",
-	})
+	}, zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error for missing CA")
 	}

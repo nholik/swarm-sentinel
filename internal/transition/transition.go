@@ -47,13 +47,17 @@ func DetectServiceTransitions(prev *state.StackSnapshot, current health.StackHea
 	transitions := make([]ServiceTransition, 0)
 	for name, currentService := range current.Services {
 		prevService, hadPrev := prevServices[name]
+		prevStatus := prevService.Status
+		if prevService.LastNotifiedStatus != "" {
+			prevStatus = prevService.LastNotifiedStatus
+		}
 
 		if firstRun {
 			if currentService.Status == health.StatusOK {
 				continue
 			}
 		} else if hadPrev {
-			if prevService.Status == currentService.Status {
+			if prevStatus == currentService.Status {
 				continue
 			}
 		} else if currentService.Status == health.StatusOK {
@@ -62,7 +66,7 @@ func DetectServiceTransitions(prev *state.StackSnapshot, current health.StackHea
 
 		transitions = append(transitions, ServiceTransition{
 			Name:           name,
-			PreviousStatus: prevService.Status,
+			PreviousStatus: prevStatus,
 			CurrentStatus:  currentService.Status,
 			Reasons:        append([]string(nil), currentService.Reasons...),
 			Drift:          append([]health.DriftDetail(nil), currentService.Drift...),

@@ -28,6 +28,12 @@ const (
 	envDockerTLSVerify    = "SS_DOCKER_TLS_VERIFY"
 	envLogLevel           = "SS_LOG_LEVEL"
 	envStatePath          = "SS_STATE_PATH"
+	envAlertStabilization = "SS_ALERT_STABILIZATION_CYCLES"
+	envHealthPort         = "SS_HEALTH_PORT"
+	envMetricsPort        = "SS_METRICS_PORT"
+	envWebhookURL         = "SS_WEBHOOK_URL"
+	envWebhookTemplate    = "SS_WEBHOOK_TEMPLATE"
+	envDryRun             = "SS_DRY_RUN"
 
 	envDockerTLSVerifyCompat = "DOCKER_TLS_VERIFY"
 	envDockerCertPathCompat  = "DOCKER_CERT_PATH"
@@ -40,30 +46,39 @@ const (
 )
 
 const (
-	defaultPollInterval     = 30 * time.Second
-	defaultComposeTimeout   = 10 * time.Second
-	defaultDockerAPITimeout = 30 * time.Second
-	defaultDockerProxyURL   = "http://localhost:2375"
-	defaultLogLevel         = "info"
-	defaultStatePath        = "/var/lib/swarm-sentinel/state.json"
+	defaultPollInterval             = 30 * time.Second
+	defaultComposeTimeout           = 10 * time.Second
+	defaultDockerAPITimeout         = 30 * time.Second
+	defaultDockerProxyURL           = "http://localhost:2375"
+	defaultLogLevel                 = "info"
+	defaultStatePath                = "/var/lib/swarm-sentinel/state.json"
+	defaultAlertStabilizationCycles = 2
+	defaultHealthPort               = 8080
+	defaultMetricsPort              = 9090
 )
 
 // Config describes runtime configuration loaded from the environment.
 type Config struct {
-	PollInterval     time.Duration
-	ComposeTimeout   time.Duration
-	DockerAPITimeout time.Duration
-	ComposeURL       string
-	SlackWebhookURL  string
-	DockerProxyURL   string
-	StackName        string
-	DockerTLSEnabled bool
-	DockerTLSVerify  bool
-	DockerTLSCA      string
-	DockerTLSCert    string
-	DockerTLSKey     string
-	LogLevel         string
-	StatePath        string
+	PollInterval             time.Duration
+	ComposeTimeout           time.Duration
+	DockerAPITimeout         time.Duration
+	ComposeURL               string
+	SlackWebhookURL          string
+	WebhookURL               string
+	WebhookTemplate          string
+	DockerProxyURL           string
+	StackName                string
+	DockerTLSEnabled         bool
+	DockerTLSVerify          bool
+	DockerTLSCA              string
+	DockerTLSCert            string
+	DockerTLSKey             string
+	LogLevel                 string
+	StatePath                string
+	AlertStabilizationCycles int
+	HealthPort               int
+	MetricsPort              int
+	DryRun                   bool
 }
 
 // Load reads configuration from environment variables and a local .env file if present.
@@ -74,12 +89,15 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		PollInterval:     defaultPollInterval,
-		ComposeTimeout:   defaultComposeTimeout,
-		DockerAPITimeout: defaultDockerAPITimeout,
-		DockerProxyURL:   defaultDockerProxyURL,
-		LogLevel:         defaultLogLevel,
-		StatePath:        defaultStatePath,
+		PollInterval:             defaultPollInterval,
+		ComposeTimeout:           defaultComposeTimeout,
+		DockerAPITimeout:         defaultDockerAPITimeout,
+		DockerProxyURL:           defaultDockerProxyURL,
+		LogLevel:                 defaultLogLevel,
+		StatePath:                defaultStatePath,
+		AlertStabilizationCycles: defaultAlertStabilizationCycles,
+		HealthPort:               defaultHealthPort,
+		MetricsPort:              defaultMetricsPort,
 	}
 
 	if value, ok := lookupTrimmed(envPollInterval); ok {
@@ -112,6 +130,13 @@ func Load() (Config, error) {
 		cfg.SlackWebhookURL = value
 	}
 
+	if value, ok := lookupTrimmed(envWebhookURL); ok {
+		cfg.WebhookURL = value
+	}
+	if value, ok := lookupTrimmed(envWebhookTemplate); ok {
+		cfg.WebhookTemplate = value
+	}
+
 	if value, ok := lookupTrimmed(envDockerProxyURL); ok {
 		cfg.DockerProxyURL = value
 	}
@@ -139,6 +164,41 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%s must not be empty", envStatePath)
 		}
 		cfg.StatePath = value
+	}
+	if value, ok := lookupTrimmed(envAlertStabilization); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envAlertStabilization, err)
+		}
+		if parsed <= 0 {
+			return Config{}, fmt.Errorf("%s must be greater than zero", envAlertStabilization)
+		}
+		cfg.AlertStabilizationCycles = parsed
+	}
+	if value, ok := lookupTrimmed(envHealthPort); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envHealthPort, err)
+		}
+		if parsed < 0 || parsed > 65535 {
+			return Config{}, fmt.Errorf("%s must be between 0 and 65535", envHealthPort)
+		}
+		cfg.HealthPort = parsed
+	}
+	if value, ok := lookupTrimmed(envMetricsPort); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envMetricsPort, err)
+		}
+		if parsed < 0 || parsed > 65535 {
+			return Config{}, fmt.Errorf("%s must be between 0 and 65535", envMetricsPort)
+		}
+		cfg.MetricsPort = parsed
+	}
+	if dryRun, dryRunSet, err := lookupBool(envDryRun); err != nil {
+		return Config{}, err
+	} else if dryRunSet {
+		cfg.DryRun = dryRun
 	}
 
 	tlsVerify, tlsVerifySet, err := lookupBool(envDockerTLSVerify)
@@ -228,6 +288,11 @@ func Load() (Config, error) {
 
 	if cfg.SlackWebhookURL != "" {
 		if err := validateURL(cfg.SlackWebhookURL, "SS_SLACK_WEBHOOK_URL"); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.WebhookURL != "" {
+		if err := validateURL(cfg.WebhookURL, "SS_WEBHOOK_URL"); err != nil {
 			return Config{}, err
 		}
 	}

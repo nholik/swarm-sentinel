@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -13,10 +14,14 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	swarmtypes "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-connections/tlsconfig"
+	"github.com/rs/zerolog"
 )
 
 const defaultAPITimeout = 30 * time.Second
+
+var defaultRetryBackoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 
 // TLSConfig describes the client TLS configuration.
 type TLSConfig struct {
@@ -30,12 +35,14 @@ type TLSConfig struct {
 // DockerClient implements Client using the official Docker Go SDK.
 // The api field uses the dockerAPI interface to allow mock implementations in tests.
 type DockerClient struct {
-	api     dockerAPI
-	timeout time.Duration
+	api           dockerAPI
+	timeout       time.Duration
+	logger        zerolog.Logger
+	retryBackoffs []time.Duration
 }
 
 // NewDockerClient initializes a Docker client for the given API host.
-func NewDockerClient(host string, timeout time.Duration, tls TLSConfig) (*DockerClient, error) {
+func NewDockerClient(host string, timeout time.Duration, tls TLSConfig, logger zerolog.Logger) (*DockerClient, error) {
 	if timeout <= 0 {
 		timeout = defaultAPITimeout
 	}
@@ -99,8 +106,10 @@ func NewDockerClient(host string, timeout time.Duration, tls TLSConfig) (*Docker
 	}
 
 	return &DockerClient{
-		api:     &dockerClientAdapter{client: api},
-		timeout: timeout,
+		api:           &dockerClientAdapter{client: api},
+		timeout:       timeout,
+		logger:        logger,
+		retryBackoffs: defaultRetryBackoffs,
 	}, nil
 }
 
@@ -149,8 +158,10 @@ func (c *DockerClient) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	_, err := c.api.Ping(ctx)
-	return err
+	return c.withRetry(ctx, "Ping", func(ctx context.Context) error {
+		_, err := c.api.Ping(ctx)
+		return err
+	})
 }
 
 // GetActualState retrieves the current state of services, optionally scoped to a stack.
@@ -194,6 +205,10 @@ func (c *DockerClient) collectServiceState(ctx context.Context, service swarmtyp
 	if service.Spec.TaskTemplate.ContainerSpec != nil {
 		image = service.Spec.TaskTemplate.ContainerSpec.Image
 	}
+	updateState := ""
+	if service.UpdateStatus != nil {
+		updateState = string(service.UpdateStatus.State)
+	}
 
 	// Docker API doesn't paginate; query per service and fall back to ID prefix paging.
 	taskFilters := filters.NewArgs(filters.Arg("service", service.ID))
@@ -212,6 +227,7 @@ func (c *DockerClient) collectServiceState(ctx context.Context, service swarmtyp
 		RunningReplicas: runningReplicas,
 		Configs:         configs,
 		Secrets:         secrets,
+		UpdateState:     updateState,
 	}, nil
 }
 
@@ -228,10 +244,16 @@ func normalizeServiceName(name, stackName string) string {
 
 func (c *DockerClient) listServices(ctx context.Context, baseFilters filters.Args) ([]swarmtypes.Service, error) {
 	listFn := func(f filters.Args) ([]swarmtypes.Service, error) {
-		return c.api.ServiceList(ctx, dockertypes.ServiceListOptions{
-			Filters: f,
-			Status:  true,
+		var services []swarmtypes.Service
+		err := c.withRetry(ctx, "ServiceList", func(ctx context.Context) error {
+			var listErr error
+			services, listErr = c.api.ServiceList(ctx, dockertypes.ServiceListOptions{
+				Filters: f,
+				Status:  true,
+			})
+			return listErr
 		})
+		return services, err
 	}
 
 	services, err := listFn(baseFilters)
@@ -254,7 +276,13 @@ func (c *DockerClient) listServices(ctx context.Context, baseFilters filters.Arg
 
 func (c *DockerClient) listTasks(ctx context.Context, baseFilters filters.Args, expected int) ([]swarmtypes.Task, error) {
 	listFn := func(f filters.Args) ([]swarmtypes.Task, error) {
-		return c.api.TaskList(ctx, dockertypes.TaskListOptions{Filters: f})
+		var tasks []swarmtypes.Task
+		err := c.withRetry(ctx, "TaskList", func(ctx context.Context) error {
+			var listErr error
+			tasks, listErr = c.api.TaskList(ctx, dockertypes.TaskListOptions{Filters: f})
+			return listErr
+		})
+		return tasks, err
 	}
 
 	if expected > maxListPageSize {
@@ -279,6 +307,88 @@ func (c *DockerClient) listTasks(ctx context.Context, baseFilters filters.Args, 
 	}
 
 	return paged, nil
+}
+
+func (c *DockerClient) withRetry(ctx context.Context, operation string, fn func(context.Context) error) error {
+	const maxRetries = 3
+	maxAttempts := maxRetries + 1
+	backoffs := c.retryBackoffs
+	if len(backoffs) == 0 {
+		backoffs = defaultRetryBackoffs
+	}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		err := fn(ctx)
+		if err == nil {
+			return nil
+		}
+
+		if !isRetryableDockerError(err) || attempt == maxAttempts {
+			return err
+		}
+
+		waitIndex := attempt - 1
+		if waitIndex >= len(backoffs) {
+			waitIndex = len(backoffs) - 1
+		}
+		wait := backoffs[waitIndex]
+		c.logger.Warn().
+			Err(err).
+			Str("operation", operation).
+			Int("attempt", attempt).
+			Int("max_attempts", maxAttempts).
+			Dur("backoff", wait).
+			Msg("docker api retrying")
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return errors.New("docker api retry attempts exhausted")
+}
+
+func isRetryableDockerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errdefs.IsUnauthorized(err) || errdefs.IsForbidden(err) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "leader election") {
+		return true
+	}
+	if strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "authorization") ||
+		strings.Contains(msg, "authentication") ||
+		strings.Contains(msg, "forbidden") {
+		return false
+	}
+	return false
 }
 
 func serviceModeAndReplicas(service swarmtypes.Service) (string, int) {

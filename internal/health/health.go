@@ -35,6 +35,8 @@ type ServiceHealth struct {
 	ActualImage     string
 	DesiredReplicas int
 	RunningReplicas int
+	ConsecutiveCycles int
+	LastNotifiedStatus ServiceStatus
 }
 
 // StackHealth summarizes the health for a stack.

@@ -153,13 +153,92 @@
   - Tests: first-run behavior, no-op transitions, mixed-service transitions
 
 ## Phase 5 — Outputs
-- [ ] SS-012: Slack notifier
-- [ ] SS-013: Logging and errors
+- [x] SS-012: Slack notifier
+  - Add `internal/notify` package with a `Notifier` interface and Slack implementation
+  - Treat missing/empty `SS_SLACK_WEBHOOK_URL` as a no-op notifier (log once at startup)
+  - Build Slack payloads from transition events:
+    - Include stack name, service name, status, reasons, and timestamps
+    - Include change details: replica delta, image mismatch, config/secret drift
+    - Use blocks with a fallback `text` field for clients that do not render blocks
+  - Batch transitions per stack per cycle to reduce message volume; include a count summary
+  - Use `github.com/slack-go/slack` to build webhook payloads
+  - Use `github.com/cenkalti/backoff/v4` for capped exponential backoff on transient failures
+  - Use `github.com/hashicorp/go-retryablehttp` for HTTP client timeouts and retryable request handling
+  - Handle 429 with `Retry-After`, using the backoff policy when no retry hint is present
+  - Add a `golang.org/x/time/rate` limiter to throttle outbound messages per stack
+  - Log Slack delivery failures but do not fail the cycle
+  - Tests: payload formatting, batching, retry/backoff, rate-limit handling
+- [x] SS-013: Logging and errors
+  - Define log levels and standard fields for runner cycles (stack, fingerprint, counts)
+  - Emit per-cycle summary log: services evaluated, OK/DEGRADED/FAILED counts, transition count
+  - Emit per-transition log entries with service name, status change, and drift summary
+  - Categorize errors: fatal (config/initialization) vs runtime (fetch/parse/swarm/notifier/state) and continue on runtime errors
+  - Wrap errors with context and surface root causes with `errors.Is/As`
+  - Tests: error classification behavior and log output for runtime failures (table-driven)
+
+## Phase 5.5 — Production Hardening
+> **Priority:** Must-have items block production deployment. Should-have items significantly improve operations.
+
+- [x] SS-013.5: Docker API resilience *(must-have)*
+  - Add retry wrapper for Swarm API calls (`ServiceList`, `TaskList`, `Ping`)
+  - Use exponential backoff (1s, 2s, 4s) with max 3 attempts
+  - Classify errors: retryable (timeout, connection reset, leader election) vs permanent (auth failure)
+  - Log retry attempts with attempt count for debugging
+  - Tests: mock transient failures, verify retry behavior
+
+- [x] SS-013.6: Alert stabilization *(must-have)*
+  - Add `SS_ALERT_STABILIZATION_CYCLES` config (default: 2)
+  - Only emit transition after N consecutive cycles in same state
+  - Prevents alert spam during rolling updates and transient issues
+  - First-run behavior unchanged (alert immediately on non-OK)
+  - Track `consecutiveCycles` per service in state snapshot
+  - Tests: verify stabilization delays alerts, immediate alert on first run
+
+- [x] SS-017: Health endpoint *(must-have, promoted from Phase 6)*
+  - Add `SS_HEALTH_PORT` config (default: 8080, 0 to disable)
+  - `GET /healthz`: Returns 200 if last cycle completed within 2× poll interval
+  - `GET /readyz`: Returns 200 after first successful cycle completes
+  - Response body: JSON with `last_cycle_time`, `cycle_duration_ms`, `stacks_evaluated`
+  - Expose as Swarm healthcheck target
+  - Tests: endpoint responses, failure conditions
+
+- [x] SS-018: Prometheus metrics *(should-have)*
+  - Add `SS_METRICS_PORT` config (default: 9090, 0 to disable; can share port with health)
+  - Expose `/metrics` endpoint with:
+    - `swarm_sentinel_cycle_duration_seconds` (histogram)
+    - `swarm_sentinel_services_total{stack, status}` (gauge)
+    - `swarm_sentinel_alerts_total{stack, severity}` (counter)
+    - `swarm_sentinel_docker_api_errors_total` (counter)
+    - `swarm_sentinel_last_successful_cycle_timestamp` (gauge)
+  - Use `github.com/prometheus/client_golang`
+  - Tests: verify metric registration and updates
+
+- [x] SS-013.7: Update-aware health evaluation *(should-have)*
+  - Check service `UpdateStatus.State` before evaluating replicas
+  - During `updating`/`rollback_started`: suppress replica-count alerts
+  - Still alert on: image drift, missing configs/secrets, complete failure (0 replicas)
+  - Log update state for traceability
+  - Tests: mock services mid-update, verify suppression
+
+- [x] SS-019: Generic webhook notifier *(nice-to-have)*
+  - Add `SS_WEBHOOK_URL` and `SS_WEBHOOK_TEMPLATE` config
+  - Template supports Go text/template with transition data
+  - Default template: JSON payload with all transition fields
+  - Allows integration with PagerDuty, Opsgenie, custom systems
+  - Share rate limiting and retry logic with Slack notifier
+  - Tests: template rendering, delivery, error handling
+
+- [x] SS-020: Dry-run mode *(nice-to-have)*
+  - Add `SS_DRY_RUN` config (default: false)
+  - When enabled: evaluate health, log transitions, skip actual notifications
+  - Log "[DRY-RUN] Would notify: ..." for each suppressed alert
+  - Useful for validating config before enabling alerts
+  - Tests: verify no notifications sent in dry-run
 
 ## Phase 6 — Packaging
 - [ ] SS-014: Dockerfile
 - [ ] SS-015: Swarm deployment example
 - [ ] SS-016: Documentation
-- [ ] SS-017: Health endpoint
-  - Add HTTP `/healthz` endpoint for Swarm's own health checks on the sentinel service
-  - Return 200 OK when the service is running and can reach dependencies
+  - Document scope: service-level monitoring only (networks/volumes out of scope)
+  - Document config/secret comparison is name-based (not content-based)
+  - Document image comparison uses tags (digest-pinned workflows may need enhancement)

@@ -91,11 +91,14 @@ func evaluateService(name string, desired compose.DesiredService, actual swarm.A
 	health.DesiredReplicas = desiredReplicas
 	health.RunningReplicas = actual.RunningReplicas
 
+	updateInProgress := actual.UpdateState == "updating" || actual.UpdateState == "rollback_started"
 	if desiredReplicas > 0 {
 		switch {
 		case actual.RunningReplicas == 0:
 			health.Status = worsenStatus(health.Status, StatusFailed)
 			health.Reasons = append(health.Reasons, fmt.Sprintf("no running replicas (desired %d)", desiredReplicas))
+		case updateInProgress:
+			// During updates/rollbacks, replica counts can temporarily drift.
 		case actual.RunningReplicas < desiredReplicas:
 			health.Status = worsenStatus(health.Status, StatusDegraded)
 			health.Reasons = append(health.Reasons, fmt.Sprintf("replicas running %d/%d", actual.RunningReplicas, desiredReplicas))
