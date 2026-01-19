@@ -1,0 +1,87 @@
+# Docker Compose file for multi-stack swarm-sentinel deployment
+# Deploy with: docker stack deploy -c multi-stack.yaml sentinel
+#
+# Prerequisites:
+#   docker config create compose-mapping deploy/compose-mapping.yaml
+#   echo "https://hooks.slack.com/..." | docker secret create slack-webhook -
+
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      SERVICES: 1
+      TASKS: 1
+      INFO: 1
+      PING: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sentinel-internal
+    deploy:
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      resources:
+        limits:
+          memory: 64M
+
+  sentinel:
+    image: swarm-sentinel:latest
+    environment:
+      SS_DOCKER_PROXY_URL: http://docker-socket-proxy:2375
+      SS_POLL_INTERVAL: 30s
+      SS_LOG_LEVEL: info
+      SS_ALERT_STABILIZATION_CYCLES: 2
+      SS_HEALTH_PORT: 8080
+      SS_METRICS_PORT: 9090
+      # Use _FILE suffix to load secret from mounted file
+      SS_SLACK_WEBHOOK_URL_FILE: /run/secrets/slack-webhook
+      # State path for distroless image (nonroot user home)
+      SS_STATE_PATH: /home/nonroot/state.json
+    configs:
+      - source: compose-mapping
+        target: /run/configs/compose-mapping.yaml
+    secrets:
+      - slack-webhook
+    volumes:
+      # Higher memory limit for multi-stack: runs one runner per stack concurrently
+      - sentinel-state:/home/nonroot
+    networks:
+      - sentinel-internal
+    # Note: depends_on has no effect in Swarm mode; sentinel retries Docker API connections
+    deploy:
+      placement:
+        constraints: [node.role == manager]
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          # Higher memory limit for multi-stack mode (one runner per stack)
+          memory: 256M
+      # Healthcheck calls the sentinel binary with -healthcheck flag (distroless compatible)
+      healthcheck:
+        test: ["/usr/local/bin/swarm-sentinel", "-healthcheck"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+        start_period: 10s
+
+networks:
+  sentinel-internal:
+    driver: overlay
+
+volumes:
+  sentinel-state:
+
+configs:
+  compose-mapping:
+    external: true
+
+secrets:
+  slack-webhook:
+    external: true

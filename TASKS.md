@@ -236,9 +236,26 @@
   - Tests: verify no notifications sent in dry-run
 
 ## Phase 6 — Packaging
-- [ ] SS-014: Dockerfile
-- [ ] SS-015: Swarm deployment example
-- [ ] SS-016: Documentation
+- [x] SS-014: Dockerfile
+  - Add multi-stage build (Go builder + minimal runtime image)
+  - Build `cmd/swarm-sentinel` with `CGO_ENABLED=0` and `-trimpath`
+  - Support multi-arch builds via `TARGETOS`/`TARGETARCH` build args
+  - Include CA certificates for HTTPS compose fetches
+  - Create non-root runtime user and writable `/var/lib/swarm-sentinel`
+  - Set `ENTRYPOINT` to the binary; `EXPOSE 8080 9090` for health/metrics
+  - Add `.dockerignore` to keep the build context small
+- [x] SS-015: Swarm deployment example
+  - Add example stack files for single-stack and multi-stack deployments
+  - Include `docker-socket-proxy` service with minimal API permissions
+  - Demonstrate Swarm config/secret usage (`SS_*_FILE`, mapping file config)
+  - Mount a state volume to `/var/lib/swarm-sentinel` and configure healthcheck
+  - Provide a sample `compose-mapping.yaml` and update/rotation steps
+  - Document placement constraints (manager-only) and resource limits
+- [x] SS-016: Documentation
+  - Document build/run flow for the Docker image (local + release tags)
+  - Document Swarm deployment steps and required socket-proxy permissions
+  - Document health/metrics endpoints and Prometheus scrape hints
+  - Document state persistence location and upgrade/backup guidance
   - Document scope: service-level monitoring only (networks/volumes out of scope)
   - Document config/secret comparison is name-based (not content-based)
   - Document image comparison uses tags (digest-pinned workflows may need enhancement)

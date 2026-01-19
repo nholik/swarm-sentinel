@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/nholik/swarm-sentinel/internal/config"
@@ -20,7 +24,23 @@ import (
 	"github.com/nholik/swarm-sentinel/internal/swarm"
 )
 
+// version is set at build time via -ldflags
+var version = "dev"
+
 func main() {
+	// Handle healthcheck flag for distroless container healthchecks
+	healthcheckFlag := flag.Bool("healthcheck", false, "Perform a health check and exit")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
+	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println("swarm-sentinel", version)
+		os.Exit(0)
+	}
+
+	if *healthcheckFlag {
+		os.Exit(runHealthcheck())
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		// Use default logger for config load errors since we don't have log level yet
@@ -170,4 +190,31 @@ func secretStatus(value string) string {
 		return "unset"
 	}
 	return "set"
+}
+
+// runHealthcheck performs an HTTP health check against the local healthz endpoint.
+// This is used for container healthchecks in distroless images where curl/wget aren't available.
+func runHealthcheck() int {
+	port := os.Getenv("SS_HEALTH_PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%s/healthz", port))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck failed: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck failed: status %d\n", resp.StatusCode)
+		return 1
+	}
+
+	return 0
 }

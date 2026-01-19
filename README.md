@@ -101,6 +101,16 @@ Each stack runs independently with isolated health tracking and state management
 
 **Compatibility:** `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` are honored as fallbacks.
 
+**TLS example (connecting to a remote Docker host):**
+
+```bash
+SS_DOCKER_PROXY_URL=https://docker.example.com:2376
+SS_DOCKER_TLS_VERIFY=true
+SS_DOCKER_TLS_CA=/run/secrets/docker-ca.pem
+SS_DOCKER_TLS_CERT=/run/secrets/docker-cert.pem
+SS_DOCKER_TLS_KEY=/run/secrets/docker-key.pem
+```
+
 ### Notifications
 
 | Variable | Default | Description |
@@ -108,6 +118,42 @@ Each stack runs independently with isolated health tracking and state management
 | `SS_SLACK_WEBHOOK_URL` | *(empty)* | Slack incoming webhook URL; empty disables Slack |
 | `SS_WEBHOOK_URL` | *(empty)* | Generic webhook URL for custom integrations |
 | `SS_WEBHOOK_TEMPLATE` | *(JSON)* | Go text/template for webhook payload |
+
+**Secret files with `_FILE` suffix:**
+
+Any configuration variable can be loaded from a file by appending `_FILE` to the variable name.
+This is the recommended approach for secrets in Docker Swarm:
+
+```bash
+# Instead of setting the secret directly (not recommended):
+SS_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../xxx
+
+# Mount as a Swarm secret and reference the file:
+SS_SLACK_WEBHOOK_URL_FILE=/run/secrets/slack-webhook
+```
+
+The `_FILE` variant takes precedence over the direct variable if both are set.
+
+**Webhook template example:**
+
+The `SS_WEBHOOK_TEMPLATE` variable accepts a Go text/template. Available fields:
+
+```go-template
+{
+  "stack": "{{.StackName}}",
+  "service": "{{.ServiceName}}",
+  "status": "{{.Status}}",
+  "previous_status": "{{.PreviousStatus}}",
+  "reasons": [{{range $i, $r := .Reasons}}{{if $i}},{{end}}"{{$r}}"{{end}}],
+  "timestamp": "{{.Timestamp}}"
+}
+```
+
+Example for PagerDuty:
+
+```bash
+SS_WEBHOOK_TEMPLATE='{"routing_key":"{{.RoutingKey}}","event_action":"trigger","payload":{"summary":"{{.StackName}}/{{.ServiceName}}: {{.Status}}","severity":"{{if eq .Status "FAILED"}}critical{{else}}warning{{end}}","source":"swarm-sentinel"}}'
+```
 
 ### Alert Behavior
 
@@ -119,7 +165,11 @@ Each stack runs independently with isolated health tracking and state management
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SS_STATE_PATH` | `/var/lib/swarm-sentinel/state.json` | Path to persisted state file |
+| `SS_STATE_PATH` | `/home/nonroot/state.json` | Path to persisted state file (distroless image) |
+
+**Note:** The Docker image uses `gcr.io/distroless/static:nonroot` as the base. The nonroot user's
+home directory `/home/nonroot` is used for state persistence. Mount a volume to this path to
+preserve state across container restarts.
 
 ### Observability
 
@@ -141,6 +191,15 @@ Each stack runs independently with isolated health tracking and state management
 - `swarm_sentinel_docker_api_errors_total` - Counter of Docker API failures
 - `swarm_sentinel_last_successful_cycle_timestamp` - Unix timestamp of last success
 
+**Scrape example:**
+
+```yaml
+scrape_configs:
+  - job_name: swarm-sentinel
+    static_configs:
+      - targets: ["sentinel:9090"]
+```
+
 ## Security Considerations
 
 ### SSRF Protection
@@ -160,19 +219,76 @@ Webhook URLs are never logged; only "set" or "unset" is shown in startup logs.
 
 ---
 
+## Docker Image
+
+The Docker image uses a multi-stage build with `gcr.io/distroless/static:nonroot` as the runtime base.
+This provides a minimal attack surface with no shell, package manager, or other utilities.
+
+### Build locally
+
+```bash
+docker build -t swarm-sentinel:local .
+
+# With version info embedded in the binary:
+docker build --build-arg VERSION=v1.0.0 -t swarm-sentinel:v1.0.0 .
+```
+
+### Multi-arch build (buildx)
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg VERSION=v1.0.0 \
+  -t swarm-sentinel:latest \
+  -t swarm-sentinel:v1.0.0 \
+  --push \
+  .
+```
+
+### Run locally
+
+```bash
+docker run --rm \
+  -e SS_COMPOSE_URL=https://artifacts.example.com/prod/compose.yml \
+  -e SS_DOCKER_PROXY_URL=http://host.docker.internal:2375 \
+  -e SS_HEALTH_PORT=8080 \
+  -e SS_METRICS_PORT=9090 \
+  -v swarm-sentinel-state:/home/nonroot \
+  -p 8080:8080 -p 9090:9090 \
+  swarm-sentinel:local
+```
+
+## State Persistence
+
+- State is stored in `SS_STATE_PATH` (default: `/home/nonroot/state.json`) inside the container.
+- Mount a volume to `/home/nonroot` to preserve state across container restarts and upgrades.
+- Keep the volume between upgrades to preserve alert stabilization and transition history.
+- To reset state, stop the service and remove the state file or replace the volume.
+
+**Upgrade notes:**
+- State file format is backward compatible within the same major version.
+- If upgrading from an older version that used `/var/lib/swarm-sentinel`, migrate the state file
+  or start fresh (sentinel will re-evaluate all services on first run).
+
 ## Docker Swarm Deployment
 
 ### Prerequisites
 
 1. A Docker Swarm cluster with at least one manager node
 2. A socket proxy (recommended) or direct Docker socket access
+   - Required proxy permissions: `SERVICES=1`, `TASKS=1`, `INFO=1`, `PING=1`
 3. Compose files accessible via HTTP(S)
+
+### Deployment Examples
+
+- Single-stack: `deploy/single-stack.yaml`
+- Multi-stack: `deploy/multi-stack.yaml`
+- Mapping file: `deploy/compose-mapping.yaml`
 
 ### Single-Stack Mode Example
 
 ```yaml
-version: '3.9'
-
+# Deploy with: docker stack deploy -c single-stack.yaml sentinel
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
@@ -188,6 +304,9 @@ services:
     deploy:
       placement:
         constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 5s
       resources:
         limits:
           memory: 64M
@@ -206,18 +325,21 @@ services:
     secrets:
       - slack-webhook
     volumes:
-      - sentinel-state:/var/lib/swarm-sentinel
+      - sentinel-state:/home/nonroot
     networks:
       - sentinel-internal
     deploy:
       placement:
         constraints: [node.role == manager]
       replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
       resources:
         limits:
           memory: 128M
       healthcheck:
-        test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+        test: ["/usr/local/bin/swarm-sentinel", "-healthcheck"]
         interval: 30s
         timeout: 5s
         retries: 3
@@ -239,7 +361,7 @@ secrets:
 **1. Create the stack mapping config:**
 
 ```yaml
-# stacks.yaml
+# deploy/compose-mapping.yaml
 stacks:
   - name: prod
     compose_url: https://artifacts.example.com/prod/compose.yml
@@ -253,7 +375,7 @@ stacks:
 ```
 
 ```bash
-docker config create compose-mapping stacks.yaml
+docker config create compose-mapping deploy/compose-mapping.yaml
 ```
 
 **2. Create the Slack webhook secret:**
@@ -265,8 +387,7 @@ echo "https://hooks.slack.com/services/T.../B.../xxx" | docker secret create sla
 **3. Deploy the stack:**
 
 ```yaml
-version: '3.9'
-
+# Deploy with: docker stack deploy -c multi-stack.yaml sentinel
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
@@ -282,6 +403,9 @@ services:
     deploy:
       placement:
         constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 5s
       resources:
         limits:
           memory: 64M
@@ -302,20 +426,22 @@ services:
     secrets:
       - slack-webhook
     volumes:
-      - sentinel-state:/var/lib/swarm-sentinel
+      # Higher memory: runs one runner per stack
+      - sentinel-state:/home/nonroot
     networks:
       - sentinel-internal
-    depends_on:
-      - docker-socket-proxy
     deploy:
       placement:
         constraints: [node.role == manager]
       replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
       resources:
         limits:
           memory: 256M
       healthcheck:
-        test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+        test: ["/usr/local/bin/swarm-sentinel", "-healthcheck"]
         interval: 30s
         timeout: 5s
         retries: 3
@@ -339,11 +465,11 @@ secrets:
 **4. Update stacks (rotate config):**
 
 ```bash
-# Edit stacks.yaml
-vim stacks.yaml
+# Edit deploy/compose-mapping.yaml
+vim deploy/compose-mapping.yaml
 
 # Create new config version
-docker config create compose-mapping-v2 stacks.yaml
+docker config create compose-mapping-v2 deploy/compose-mapping.yaml
 
 # Update service to use new config
 docker service update \
