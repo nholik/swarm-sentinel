@@ -141,6 +141,15 @@ Each stack runs independently with isolated health tracking and state management
 - `swarm_sentinel_docker_api_errors_total` - Counter of Docker API failures
 - `swarm_sentinel_last_successful_cycle_timestamp` - Unix timestamp of last success
 
+**Scrape example:**
+
+```yaml
+scrape_configs:
+  - job_name: swarm-sentinel
+    static_configs:
+      - targets: ["sentinel:9090"]
+```
+
 ## Security Considerations
 
 ### SSRF Protection
@@ -160,13 +169,58 @@ Webhook URLs are never logged; only "set" or "unset" is shown in startup logs.
 
 ---
 
+## Docker Image
+
+### Build locally
+
+```bash
+docker build -t swarm-sentinel:local .
+```
+
+### Multi-arch build (buildx)
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t swarm-sentinel:latest \
+  -t swarm-sentinel:v0.1.0 \
+  --push \
+  .
+```
+
+### Run locally
+
+```bash
+docker run --rm \
+  -e SS_COMPOSE_URL=https://artifacts.example.com/prod/compose.yml \
+  -e SS_DOCKER_PROXY_URL=http://host.docker.internal:2375 \
+  -e SS_HEALTH_PORT=8080 \
+  -e SS_METRICS_PORT=9090 \
+  -v swarm-sentinel-state:/var/lib/swarm-sentinel \
+  -p 8080:8080 -p 9090:9090 \
+  swarm-sentinel:local
+```
+
+## State Persistence
+
+- State is stored in `SS_STATE_PATH` (default: `/var/lib/swarm-sentinel/state.json`) inside the container.
+- Keep the volume between upgrades to preserve alert stabilization and transition history.
+- To reset state, stop the service and remove the state file or replace the volume.
+
 ## Docker Swarm Deployment
 
 ### Prerequisites
 
 1. A Docker Swarm cluster with at least one manager node
 2. A socket proxy (recommended) or direct Docker socket access
+   - Required proxy permissions: `SERVICES=1`, `TASKS=1`, `INFO=1`, `PING=1`
 3. Compose files accessible via HTTP(S)
+
+### Deployment Examples
+
+- Single-stack: `deploy/single-stack.yaml`
+- Multi-stack: `deploy/multi-stack.yaml`
+- Mapping file: `deploy/compose-mapping.yaml`
 
 ### Single-Stack Mode Example
 
@@ -239,7 +293,7 @@ secrets:
 **1. Create the stack mapping config:**
 
 ```yaml
-# stacks.yaml
+# deploy/compose-mapping.yaml
 stacks:
   - name: prod
     compose_url: https://artifacts.example.com/prod/compose.yml
@@ -253,7 +307,7 @@ stacks:
 ```
 
 ```bash
-docker config create compose-mapping stacks.yaml
+docker config create compose-mapping deploy/compose-mapping.yaml
 ```
 
 **2. Create the Slack webhook secret:**
@@ -339,11 +393,11 @@ secrets:
 **4. Update stacks (rotate config):**
 
 ```bash
-# Edit stacks.yaml
-vim stacks.yaml
+# Edit deploy/compose-mapping.yaml
+vim deploy/compose-mapping.yaml
 
 # Create new config version
-docker config create compose-mapping-v2 stacks.yaml
+docker config create compose-mapping-v2 deploy/compose-mapping.yaml
 
 # Update service to use new config
 docker service update \

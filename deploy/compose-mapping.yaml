@@ -1,0 +1,10 @@
+stacks:
+  - name: prod
+    compose_url: https://artifacts.example.com/prod/compose.yml
+    timeout: 20s
+
+  - name: staging
+    compose_url: https://artifacts.example.com/staging/compose.yml
+
+  - name: monitoring
+    compose_url: https://artifacts.example.com/monitoring/compose.yml
