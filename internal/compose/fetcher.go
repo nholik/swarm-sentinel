@@ -30,6 +30,35 @@ type FetchResult struct {
 	NotModified  bool
 }
 
+// FetchError provides detailed error information for fetch failures.
+// Use errors.As to extract this type and access StatusCode or IsRetryable().
+type FetchError struct {
+	StatusCode int
+	URL        string
+	Err        error
+}
+
+func (e *FetchError) Error() string {
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("compose fetch failed: HTTP %d from %s", e.StatusCode, e.URL)
+	}
+	return fmt.Sprintf("compose fetch failed: %v", e.Err)
+}
+
+func (e *FetchError) Unwrap() error {
+	return e.Err
+}
+
+// IsRetryable returns true if the error is transient and worth retrying.
+func (e *FetchError) IsRetryable() bool {
+	// Network errors (no status code) are generally retryable
+	if e.StatusCode == 0 {
+		return true
+	}
+	// 5xx server errors are retryable
+	return e.StatusCode >= 500 && e.StatusCode < 600
+}
+
 // HTTPFetcher retrieves a compose file over HTTP with configurable retry logic.
 type HTTPFetcher struct {
 	url        string
@@ -153,6 +182,12 @@ func isRetryableError(err error) bool {
 		return false
 	}
 
+	// Check if it's a FetchError with retryable status
+	var fetchErr *FetchError
+	if errors.As(err, &fetchErr) {
+		return fetchErr.IsRetryable()
+	}
+
 	// Network errors are generally retryable
 	var netErr interface{ Timeout() bool }
 	if errors.As(err, &netErr) && netErr.Timeout() {
@@ -186,7 +221,7 @@ func isRetryableError(err error) bool {
 func (f *HTTPFetcher) doFetch(ctx context.Context, previousETag string) (FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.url, http.NoBody)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("create request: %w", err)
+		return FetchResult{}, &FetchError{URL: f.url, Err: fmt.Errorf("create request: %w", err)}
 	}
 	if previousETag != "" {
 		req.Header.Set("If-None-Match", previousETag)
@@ -194,7 +229,7 @@ func (f *HTTPFetcher) doFetch(ctx context.Context, previousETag string) (FetchRe
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("fetch compose: %w", err)
+		return FetchResult{}, &FetchError{URL: f.url, Err: fmt.Errorf("fetch compose: %w", err)}
 	}
 	defer resp.Body.Close()
 
@@ -208,16 +243,16 @@ func (f *HTTPFetcher) doFetch(ctx context.Context, previousETag string) (FetchRe
 
 	// Retry on server errors (5xx)
 	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-		return FetchResult{}, fmt.Errorf("server error: %s", resp.Status)
+		return FetchResult{}, &FetchError{StatusCode: resp.StatusCode, URL: f.url, Err: fmt.Errorf("server error: %s", resp.Status)}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return FetchResult{}, &nonRetryableError{fmt.Errorf("unexpected status: %s", resp.Status)}
+		return FetchResult{}, &nonRetryableError{&FetchError{StatusCode: resp.StatusCode, URL: f.url, Err: fmt.Errorf("unexpected status: %s", resp.Status)}}
 	}
 
 	body, err := readWithLimit(resp.Body, f.maxBytes)
 	if err != nil {
-		return FetchResult{}, err
+		return FetchResult{}, &FetchError{URL: f.url, Err: err}
 	}
 	if len(body) == 0 {
 		return FetchResult{}, &nonRetryableError{errors.New("compose body is empty")}

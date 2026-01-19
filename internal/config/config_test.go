@@ -555,3 +555,89 @@ func containsAt(s, substr string) bool {
 	}
 	return false
 }
+
+func TestLoadSecretFromFile(t *testing.T) {
+	t.Run("prefers _FILE over direct env var", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		restoreDir := mustChdir(t, tmpDir)
+		defer restoreDir()
+
+		secretFile := filepath.Join(tmpDir, "slack-secret")
+		if err := os.WriteFile(secretFile, []byte("https://hooks.slack.com/from-file\n"), 0o600); err != nil {
+			t.Fatalf("write secret file: %v", err)
+		}
+
+		t.Setenv(envComposeURL, "https://example.com/compose.yml")
+		t.Setenv(envSlackWebhookURL, "https://hooks.slack.com/from-env")
+		t.Setenv(envSlackWebhookURL+"_FILE", secretFile)
+
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if got.SlackWebhookURL != "https://hooks.slack.com/from-file" {
+			t.Fatalf("expected slack webhook from file, got: %s", got.SlackWebhookURL)
+		}
+	})
+
+	t.Run("falls back to direct env var when file missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		restoreDir := mustChdir(t, tmpDir)
+		defer restoreDir()
+
+		t.Setenv(envComposeURL, "https://example.com/compose.yml")
+		t.Setenv(envSlackWebhookURL, "https://hooks.slack.com/from-env")
+		t.Setenv(envSlackWebhookURL+"_FILE", "/nonexistent/path/secret")
+
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if got.SlackWebhookURL != "https://hooks.slack.com/from-env" {
+			t.Fatalf("expected slack webhook from env fallback, got: %s", got.SlackWebhookURL)
+		}
+	})
+
+	t.Run("trims whitespace from file content", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		restoreDir := mustChdir(t, tmpDir)
+		defer restoreDir()
+
+		secretFile := filepath.Join(tmpDir, "webhook-secret")
+		if err := os.WriteFile(secretFile, []byte("  https://webhook.example.com/hook  \n\n"), 0o600); err != nil {
+			t.Fatalf("write secret file: %v", err)
+		}
+
+		t.Setenv(envComposeURL, "https://example.com/compose.yml")
+		t.Setenv(envWebhookURL+"_FILE", secretFile)
+
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if got.WebhookURL != "https://webhook.example.com/hook" {
+			t.Fatalf("expected trimmed webhook url, got: %q", got.WebhookURL)
+		}
+	})
+
+	t.Run("uses direct env var when no _FILE set", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		restoreDir := mustChdir(t, tmpDir)
+		defer restoreDir()
+
+		t.Setenv(envComposeURL, "https://example.com/compose.yml")
+		t.Setenv(envWebhookURL, "https://webhook.example.com/direct")
+
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if got.WebhookURL != "https://webhook.example.com/direct" {
+			t.Fatalf("expected webhook url from env, got: %s", got.WebhookURL)
+		}
+	})
+}

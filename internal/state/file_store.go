@@ -34,7 +34,7 @@ func (s *FileStore) Load(ctx context.Context) (State, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.logger.Warn().Str("path", s.path).Msg("state file missing, starting fresh")
-			return State{Stacks: map[string]StackSnapshot{}}, nil
+			return State{Version: CurrentStateVersion, Stacks: map[string]StackSnapshot{}}, nil
 		}
 		return State{}, err
 	}
@@ -42,8 +42,24 @@ func (s *FileStore) Load(ctx context.Context) (State, error) {
 	var state State
 	if err := json.Unmarshal(data, &state); err != nil {
 		s.logger.Warn().Str("path", s.path).Err(err).Msg("state file corrupt, starting fresh")
-		return State{Stacks: map[string]StackSnapshot{}}, nil
+		return State{Version: CurrentStateVersion, Stacks: map[string]StackSnapshot{}}, nil
 	}
+
+	// Handle version migration
+	if state.Version == 0 {
+		// Pre-versioned state file, upgrade to current version
+		state.Version = CurrentStateVersion
+		s.logger.Info().Str("path", s.path).Msg("migrated state file to version 1")
+	}
+	if state.Version > CurrentStateVersion {
+		s.logger.Warn().
+			Str("path", s.path).
+			Int("file_version", state.Version).
+			Int("supported_version", CurrentStateVersion).
+			Msg("state file version newer than supported, starting fresh")
+		return State{Version: CurrentStateVersion, Stacks: map[string]StackSnapshot{}}, nil
+	}
+
 	if state.Stacks == nil {
 		state.Stacks = map[string]StackSnapshot{}
 	}
@@ -54,6 +70,10 @@ func (s *FileStore) Load(ctx context.Context) (State, error) {
 func (s *FileStore) Save(ctx context.Context, state State) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	// Ensure version is set
+	if state.Version == 0 {
+		state.Version = CurrentStateVersion
 	}
 	if state.Stacks == nil {
 		state.Stacks = map[string]StackSnapshot{}

@@ -126,13 +126,9 @@ func Load() (Config, error) {
 		cfg.ComposeTimeout = timeout
 	}
 
-	if value, ok := lookupTrimmed(envSlackWebhookURL); ok {
-		cfg.SlackWebhookURL = value
-	}
-
-	if value, ok := lookupTrimmed(envWebhookURL); ok {
-		cfg.WebhookURL = value
-	}
+	// Use _FILE pattern for sensitive URLs (Docker/K8s secrets support)
+	cfg.SlackWebhookURL = loadSecretFromFile(envSlackWebhookURL)
+	cfg.WebhookURL = loadSecretFromFile(envWebhookURL)
 	if value, ok := lookupTrimmed(envWebhookTemplate); ok {
 		cfg.WebhookTemplate = value
 	}
@@ -298,6 +294,22 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadSecretFromFile checks for a _FILE variant of an env var first (Docker secrets pattern),
+// then falls back to the direct env var value. This allows sensitive values to be stored
+// in files mounted from Docker secrets or Kubernetes secrets.
+func loadSecretFromFile(envVar string) string {
+	fileEnvVar := envVar + "_FILE"
+	if filePath, ok := lookupTrimmed(fileEnvVar); ok {
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			// File specified but not readable - fall through to direct env var
+			return strings.TrimSpace(os.Getenv(envVar))
+		}
+		return strings.TrimSpace(string(content))
+	}
+	return strings.TrimSpace(os.Getenv(envVar))
 }
 
 func lookupTrimmed(key string) (string, bool) {
