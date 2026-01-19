@@ -28,6 +28,12 @@ const (
 	envDockerTLSVerify    = "SS_DOCKER_TLS_VERIFY"
 	envLogLevel           = "SS_LOG_LEVEL"
 	envStatePath          = "SS_STATE_PATH"
+	envAlertStabilization = "SS_ALERT_STABILIZATION_CYCLES"
+	envHealthPort         = "SS_HEALTH_PORT"
+	envMetricsPort        = "SS_METRICS_PORT"
+	envWebhookURL         = "SS_WEBHOOK_URL"
+	envWebhookTemplate    = "SS_WEBHOOK_TEMPLATE"
+	envDryRun             = "SS_DRY_RUN"
 
 	envDockerTLSVerifyCompat = "DOCKER_TLS_VERIFY"
 	envDockerCertPathCompat  = "DOCKER_CERT_PATH"
@@ -40,30 +46,39 @@ const (
 )
 
 const (
-	defaultPollInterval     = 30 * time.Second
-	defaultComposeTimeout   = 10 * time.Second
-	defaultDockerAPITimeout = 30 * time.Second
-	defaultDockerProxyURL   = "http://localhost:2375"
-	defaultLogLevel         = "info"
-	defaultStatePath        = "/var/lib/swarm-sentinel/state.json"
+	defaultPollInterval             = 30 * time.Second
+	defaultComposeTimeout           = 10 * time.Second
+	defaultDockerAPITimeout         = 30 * time.Second
+	defaultDockerProxyURL           = "http://localhost:2375"
+	defaultLogLevel                 = "info"
+	defaultStatePath                = "/var/lib/swarm-sentinel/state.json"
+	defaultAlertStabilizationCycles = 2
+	defaultHealthPort               = 8080
+	defaultMetricsPort              = 9090
 )
 
 // Config describes runtime configuration loaded from the environment.
 type Config struct {
-	PollInterval     time.Duration
-	ComposeTimeout   time.Duration
-	DockerAPITimeout time.Duration
-	ComposeURL       string
-	SlackWebhookURL  string
-	DockerProxyURL   string
-	StackName        string
-	DockerTLSEnabled bool
-	DockerTLSVerify  bool
-	DockerTLSCA      string
-	DockerTLSCert    string
-	DockerTLSKey     string
-	LogLevel         string
-	StatePath        string
+	PollInterval             time.Duration
+	ComposeTimeout           time.Duration
+	DockerAPITimeout         time.Duration
+	ComposeURL               string
+	SlackWebhookURL          string
+	WebhookURL               string
+	WebhookTemplate          string
+	DockerProxyURL           string
+	StackName                string
+	DockerTLSEnabled         bool
+	DockerTLSVerify          bool
+	DockerTLSCA              string
+	DockerTLSCert            string
+	DockerTLSKey             string
+	LogLevel                 string
+	StatePath                string
+	AlertStabilizationCycles int
+	HealthPort               int
+	MetricsPort              int
+	DryRun                   bool
 }
 
 // Load reads configuration from environment variables and a local .env file if present.
@@ -74,12 +89,15 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		PollInterval:     defaultPollInterval,
-		ComposeTimeout:   defaultComposeTimeout,
-		DockerAPITimeout: defaultDockerAPITimeout,
-		DockerProxyURL:   defaultDockerProxyURL,
-		LogLevel:         defaultLogLevel,
-		StatePath:        defaultStatePath,
+		PollInterval:             defaultPollInterval,
+		ComposeTimeout:           defaultComposeTimeout,
+		DockerAPITimeout:         defaultDockerAPITimeout,
+		DockerProxyURL:           defaultDockerProxyURL,
+		LogLevel:                 defaultLogLevel,
+		StatePath:                defaultStatePath,
+		AlertStabilizationCycles: defaultAlertStabilizationCycles,
+		HealthPort:               defaultHealthPort,
+		MetricsPort:              defaultMetricsPort,
 	}
 
 	if value, ok := lookupTrimmed(envPollInterval); ok {
@@ -108,8 +126,11 @@ func Load() (Config, error) {
 		cfg.ComposeTimeout = timeout
 	}
 
-	if value, ok := lookupTrimmed(envSlackWebhookURL); ok {
-		cfg.SlackWebhookURL = value
+	// Use _FILE pattern for sensitive URLs (Docker/K8s secrets support)
+	cfg.SlackWebhookURL = loadSecretFromFile(envSlackWebhookURL)
+	cfg.WebhookURL = loadSecretFromFile(envWebhookURL)
+	if value, ok := lookupTrimmed(envWebhookTemplate); ok {
+		cfg.WebhookTemplate = value
 	}
 
 	if value, ok := lookupTrimmed(envDockerProxyURL); ok {
@@ -139,6 +160,41 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%s must not be empty", envStatePath)
 		}
 		cfg.StatePath = value
+	}
+	if value, ok := lookupTrimmed(envAlertStabilization); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envAlertStabilization, err)
+		}
+		if parsed <= 0 {
+			return Config{}, fmt.Errorf("%s must be greater than zero", envAlertStabilization)
+		}
+		cfg.AlertStabilizationCycles = parsed
+	}
+	if value, ok := lookupTrimmed(envHealthPort); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envHealthPort, err)
+		}
+		if parsed < 0 || parsed > 65535 {
+			return Config{}, fmt.Errorf("%s must be between 0 and 65535", envHealthPort)
+		}
+		cfg.HealthPort = parsed
+	}
+	if value, ok := lookupTrimmed(envMetricsPort); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %w", envMetricsPort, err)
+		}
+		if parsed < 0 || parsed > 65535 {
+			return Config{}, fmt.Errorf("%s must be between 0 and 65535", envMetricsPort)
+		}
+		cfg.MetricsPort = parsed
+	}
+	if dryRun, dryRunSet, err := lookupBool(envDryRun); err != nil {
+		return Config{}, err
+	} else if dryRunSet {
+		cfg.DryRun = dryRun
 	}
 
 	tlsVerify, tlsVerifySet, err := lookupBool(envDockerTLSVerify)
@@ -231,8 +287,29 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if cfg.WebhookURL != "" {
+		if err := validateURL(cfg.WebhookURL, "SS_WEBHOOK_URL"); err != nil {
+			return Config{}, err
+		}
+	}
 
 	return cfg, nil
+}
+
+// loadSecretFromFile checks for a _FILE variant of an env var first (Docker secrets pattern),
+// then falls back to the direct env var value. This allows sensitive values to be stored
+// in files mounted from Docker secrets or Kubernetes secrets.
+func loadSecretFromFile(envVar string) string {
+	fileEnvVar := envVar + "_FILE"
+	if filePath, ok := lookupTrimmed(fileEnvVar); ok {
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			// File specified but not readable - fall through to direct env var
+			return strings.TrimSpace(os.Getenv(envVar))
+		}
+		return strings.TrimSpace(string(content))
+	}
+	return strings.TrimSpace(os.Getenv(envVar))
 }
 
 func lookupTrimmed(key string) (string, bool) {
@@ -291,6 +368,41 @@ func validateHTTPURL(value, name string) error {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return fmt.Errorf("invalid %s: must be http or https URL", name)
 	}
+
+	// SSRF protection: block cloud metadata endpoints
+	if err := validateNotMetadataEndpoint(parsed, name); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateNotMetadataEndpoint blocks requests to cloud provider metadata services
+// to prevent SSRF attacks that could leak credentials or sensitive instance data.
+func validateNotMetadataEndpoint(u *url.URL, name string) error {
+	hostname := strings.ToLower(u.Hostname())
+
+	// Cloud provider metadata endpoints
+	blockedHosts := []string{
+		"169.254.169.254", // AWS, GCP, Azure, DigitalOcean metadata
+		"metadata.google.internal",
+		"metadata.goog",
+		"metadata.azure.com",
+		"169.254.170.2", // AWS ECS task metadata
+		"fd00:ec2::254", // AWS IPv6 metadata
+	}
+
+	for _, blocked := range blockedHosts {
+		if hostname == blocked {
+			return fmt.Errorf("%s cannot target cloud metadata endpoint: %s", name, hostname)
+		}
+	}
+
+	// Block link-local addresses (169.254.x.x) which are used for metadata services
+	if strings.HasPrefix(hostname, "169.254.") {
+		return fmt.Errorf("%s cannot target link-local address: %s", name, hostname)
+	}
+
 	return nil
 }
 

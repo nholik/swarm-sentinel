@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,8 +95,24 @@ func TestHTTPFetcher_Fetch_RejectsStatus(t *testing.T) {
 	}
 
 	_, err = fetcher.Fetch(context.Background(), "")
-	if err == nil || !strings.Contains(err.Error(), "unexpected status") {
-		t.Fatalf("expected status error, got %v", err)
+	if err == nil {
+		t.Fatal("expected error for bad status")
+	}
+
+	// Check that we can extract status code from FetchError
+	var fetchErr *FetchError
+	if errors.As(err, &fetchErr) {
+		if fetchErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected status code %d, got %d", http.StatusBadRequest, fetchErr.StatusCode)
+		}
+		if fetchErr.IsRetryable() {
+			t.Fatal("4xx errors should not be retryable")
+		}
+	} else {
+		// Fallback to string matching for wrapped errors
+		if !strings.Contains(err.Error(), "400") && !strings.Contains(err.Error(), "Bad Request") {
+			t.Fatalf("expected status error, got %v", err)
+		}
 	}
 }
 

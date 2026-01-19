@@ -3,11 +3,15 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/nholik/swarm-sentinel/internal/health"
+	"github.com/nholik/swarm-sentinel/internal/healthcheck"
+	"github.com/nholik/swarm-sentinel/internal/metrics"
+	"github.com/nholik/swarm-sentinel/internal/notify"
 	"github.com/nholik/swarm-sentinel/internal/state"
 	"github.com/nholik/swarm-sentinel/internal/swarm"
 	"github.com/nholik/swarm-sentinel/internal/transition"
@@ -34,19 +38,24 @@ func (t timeTicker) Stop() {
 
 // Runner orchestrates the main execution loop.
 type Runner struct {
-	logger           zerolog.Logger
-	pollInterval     time.Duration
-	tickerFactory    func(time.Duration) Ticker
-	runOnce          func(context.Context) error
-	composeFetcher   compose.Fetcher
-	swarmClient      swarm.Client
-	stackName        string
-	composeETag      string
-	composeHash      string
-	lastDesiredState *compose.DesiredState
-	lastActualState  *swarm.ActualState
-	stateStore       state.Store
-	stateMu          *sync.Mutex
+	logger                   zerolog.Logger
+	pollInterval             time.Duration
+	tickerFactory            func(time.Duration) Ticker
+	runOnce                  func(context.Context) error
+	composeFetcher           compose.Fetcher
+	swarmClient              swarm.Client
+	stackName                string
+	composeETag              string
+	composeHash              string
+	lastDesiredState         *compose.DesiredState
+	lastActualState          *swarm.ActualState
+	stateStore               state.Store
+	stateMu                  *sync.Mutex
+	notifier                 notify.Notifier
+	alertStabilizationCycles int
+	cycleTracker             *healthcheck.Tracker
+	metrics                  *metrics.Metrics
+	stacksEvaluated          int
 }
 
 // Option customizes runner behavior.
@@ -95,11 +104,48 @@ func WithStateStore(store state.Store, lock *sync.Mutex) Option {
 	}
 }
 
+// WithNotifier enables transition notifications.
+func WithNotifier(notifier notify.Notifier) Option {
+	return func(r *Runner) {
+		r.notifier = notifier
+	}
+}
+
+// WithAlertStabilizationCycles sets how many consecutive cycles a status must persist before alerting.
+func WithAlertStabilizationCycles(cycles int) Option {
+	return func(r *Runner) {
+		r.alertStabilizationCycles = cycles
+	}
+}
+
+// WithCycleTracker records cycle timing for health endpoints.
+func WithCycleTracker(tracker *healthcheck.Tracker) Option {
+	return func(r *Runner) {
+		r.cycleTracker = tracker
+	}
+}
+
+// WithMetrics attaches Prometheus metrics collectors.
+func WithMetrics(metricsCollector *metrics.Metrics) Option {
+	return func(r *Runner) {
+		r.metrics = metricsCollector
+	}
+}
+
+// WithStacksEvaluated sets the total number of stacks evaluated per cycle.
+func WithStacksEvaluated(count int) Option {
+	return func(r *Runner) {
+		r.stacksEvaluated = count
+	}
+}
+
 // New constructs a Runner with the given logger and poll interval.
 func New(logger zerolog.Logger, pollInterval time.Duration, opts ...Option) *Runner {
 	r := &Runner{
-		logger:       logger,
-		pollInterval: pollInterval,
+		logger:                   logger,
+		pollInterval:             pollInterval,
+		alertStabilizationCycles: 1,
+		stacksEvaluated:          1,
 		tickerFactory: func(d time.Duration) Ticker {
 			return timeTicker{ticker: time.NewTicker(d)}
 		},
@@ -124,7 +170,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Run immediately on startup
 	if err := r.RunOnce(ctx); err != nil {
-		r.logger.Error().Err(err).Msg("initial run cycle failed")
+		logEvent := r.logger.Error().Err(err)
+		var runtimeErr *RuntimeError
+		if errors.As(err, &runtimeErr) {
+			logEvent = logEvent.Bool("runtime_error", true)
+		}
+		logEvent.Msg("initial run cycle failed")
 	}
 
 	ticker := r.tickerFactory(r.pollInterval)
@@ -137,7 +188,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C():
 			if err := r.RunOnce(ctx); err != nil {
-				r.logger.Error().Err(err).Msg("run cycle failed")
+				logEvent := r.logger.Error().Err(err)
+				var runtimeErr *RuntimeError
+				if errors.As(err, &runtimeErr) {
+					logEvent = logEvent.Bool("runtime_error", true)
+				}
+				logEvent.Msg("run cycle failed")
 			}
 		}
 	}
@@ -145,14 +201,34 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // RunOnce executes a single cycle of the runner.
 func (r *Runner) RunOnce(ctx context.Context) error {
-	return r.runOnce(ctx)
+	start := time.Now()
+	err := r.runOnce(ctx)
+	if err == nil {
+		duration := time.Since(start)
+		if r.cycleTracker != nil {
+			stacksEvaluated := r.stacksEvaluated
+			if stacksEvaluated <= 0 {
+				stacksEvaluated = 1
+			}
+			r.cycleTracker.RecordCycle(duration, stacksEvaluated)
+		}
+		if r.metrics != nil {
+			r.metrics.ObserveCycleDuration(duration)
+			r.metrics.SetLastSuccessfulCycleTimestamp(time.Now().UTC())
+		}
+	}
+	return err
 }
 
 func (r *Runner) defaultRunOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if r.composeFetcher != nil {
 		result, err := r.composeFetcher.Fetch(ctx, r.composeETag)
 		if err != nil {
-			return err
+			return wrapRuntime("compose fetch", err)
 		}
 
 		if result.ETag != "" {
@@ -164,7 +240,7 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 		} else {
 			fingerprint, err := compose.Fingerprint(result.Body)
 			if err != nil {
-				return err
+				return wrapRuntime("compose fingerprint", err)
 			}
 			if fingerprint == r.composeHash {
 				r.logger.Debug().Msg("compose fingerprint unchanged")
@@ -180,7 +256,7 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 
 				desiredState, err := compose.ParseDesiredState(ctx, result.Body)
 				if err != nil {
-					return err
+					return wrapRuntime("compose parse", err)
 				}
 				r.lastDesiredState = &desiredState
 
@@ -195,13 +271,20 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 		return nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if r.lastDesiredState == nil {
 		r.logger.Warn().Msg("desired state not yet available, collecting actual state only")
 	}
 
 	actualState, err := r.swarmClient.GetActualState(ctx, r.stackName)
 	if err != nil {
-		return err
+		if r.metrics != nil {
+			r.metrics.IncDockerAPIErrors()
+		}
+		return wrapRuntime("swarm actual state", err)
 	}
 	r.lastActualState = actualState
 
@@ -224,7 +307,7 @@ func (r *Runner) defaultRunOnce(ctx context.Context) error {
 
 	if r.stateStore != nil && r.lastDesiredState != nil {
 		if err := r.evaluateAndPersist(ctx); err != nil {
-			return err
+			return wrapRuntime("state evaluation", err)
 		}
 	}
 
@@ -235,36 +318,56 @@ func (r *Runner) evaluateAndPersist(ctx context.Context) error {
 	stackScoped := r.stackName != ""
 	stackHealth := health.EvaluateStackHealth(*r.lastDesiredState, r.lastActualState, stackScoped)
 
+	if r.lastActualState != nil {
+		for _, service := range r.lastActualState.Services {
+			if service.UpdateState == "" {
+				continue
+			}
+			r.logger.Info().
+				Str("service", service.Name).
+				Str("update_state", service.UpdateState).
+				Str("stack_name", r.stackKey()).
+				Msg("service update status")
+		}
+	}
+
 	stackKey := r.stackKey()
 	now := time.Now().UTC()
 
 	var snapshot *state.StackSnapshot
+	var updatedServices map[string]health.ServiceHealth
+	var transitions []transition.ServiceTransition
 	err := r.withStateLock(func() error {
 		loaded, err := r.stateStore.Load(ctx)
 		if err != nil {
-			return err
+			return wrapRuntime("state load", err)
 		}
 		if existing, ok := loaded.Stacks[stackKey]; ok {
 			copySnapshot := existing
 			snapshot = &copySnapshot
 		}
 
+		updatedServices, transitions = r.stabilizeTransitions(snapshot, stackHealth)
 		if loaded.Stacks == nil {
 			loaded.Stacks = map[string]state.StackSnapshot{}
 		}
 		loaded.Stacks[stackKey] = state.StackSnapshot{
 			DesiredFingerprint: r.composeHash,
-			Services:           stackHealth.Services,
+			Services:           updatedServices,
 			EvaluatedAt:        now,
 		}
 
-		return r.stateStore.Save(ctx, loaded)
+		if err := r.stateStore.Save(ctx, loaded); err != nil {
+			return wrapRuntime("state save", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	transitions := transition.DetectServiceTransitions(snapshot, stackHealth)
+	r.logCycleSummary(stackHealth, transitions)
+	r.recordMetrics(stackHealth, transitions)
 	for _, change := range transitions {
 		var event *zerolog.Event
 		switch change.CurrentStatus {
@@ -295,10 +398,133 @@ func (r *Runner) evaluateAndPersist(ctx context.Context) error {
 		if len(change.Drift) > 0 {
 			event = event.Interface("drift", change.Drift)
 		}
+		event = event.Str("stack_name", r.stackKey())
 		event.Msg("service transition detected")
 	}
 
+	if r.notifier != nil && len(transitions) > 0 {
+		if err := r.notifier.Notify(ctx, r.stackKey(), transitions); err != nil {
+			r.logger.Error().Err(err).Msg("failed to send notifications")
+		}
+	}
+
 	return nil
+}
+
+func (r *Runner) recordMetrics(stackHealth health.StackHealth, transitions []transition.ServiceTransition) {
+	if r.metrics == nil {
+		return
+	}
+
+	okCount := 0
+	degradedCount := 0
+	failedCount := 0
+	for _, service := range stackHealth.Services {
+		switch service.Status {
+		case health.StatusOK:
+			okCount++
+		case health.StatusDegraded:
+			degradedCount++
+		case health.StatusFailed:
+			failedCount++
+		}
+	}
+
+	stack := r.stackKey()
+	r.metrics.SetServicesTotal(stack, "ok", okCount)
+	r.metrics.SetServicesTotal(stack, "degraded", degradedCount)
+	r.metrics.SetServicesTotal(stack, "failed", failedCount)
+
+	for _, change := range transitions {
+		severity := strings.ToLower(string(change.CurrentStatus))
+		if severity == "" {
+			severity = "unknown"
+		}
+		r.metrics.IncAlertsTotal(stack, severity)
+	}
+}
+
+func (r *Runner) stabilizeTransitions(prev *state.StackSnapshot, current health.StackHealth) (map[string]health.ServiceHealth, []transition.ServiceTransition) {
+	stabilization := r.alertStabilizationCycles
+	if stabilization <= 0 {
+		stabilization = 1
+	}
+
+	prevServices := map[string]health.ServiceHealth{}
+	if prev != nil && prev.Services != nil {
+		prevServices = prev.Services
+	}
+	firstRun := prev == nil || len(prevServices) == 0
+
+	updatedServices := make(map[string]health.ServiceHealth, len(current.Services))
+	eligibleServices := make(map[string]health.ServiceHealth)
+
+	for name, service := range current.Services {
+		prevService, hadPrev := prevServices[name]
+		consecutive := 1
+		if hadPrev && prevService.Status == service.Status {
+			if prevService.ConsecutiveCycles > 0 {
+				consecutive = prevService.ConsecutiveCycles + 1
+			} else {
+				consecutive = 2
+			}
+		}
+
+		lastNotified := prevService.LastNotifiedStatus
+		if lastNotified == "" && hadPrev {
+			lastNotified = prevService.Status
+		}
+
+		service.ConsecutiveCycles = consecutive
+		service.LastNotifiedStatus = lastNotified
+
+		shouldNotify := false
+		if firstRun {
+			shouldNotify = service.Status != health.StatusOK
+		} else if service.Status != lastNotified {
+			shouldNotify = stabilization <= 1 || consecutive >= stabilization
+		}
+
+		if shouldNotify {
+			eligibleServices[name] = service
+			service.LastNotifiedStatus = service.Status
+		}
+
+		updatedServices[name] = service
+	}
+
+	transitions := transition.DetectServiceTransitions(prev, health.StackHealth{
+		Status:   current.Status,
+		Services: eligibleServices,
+	})
+	return updatedServices, transitions
+}
+
+func (r *Runner) logCycleSummary(stackHealth health.StackHealth, transitions []transition.ServiceTransition) {
+	okCount := 0
+	degradedCount := 0
+	failedCount := 0
+
+	for _, service := range stackHealth.Services {
+		switch service.Status {
+		case health.StatusOK:
+			okCount++
+		case health.StatusDegraded:
+			degradedCount++
+		case health.StatusFailed:
+			failedCount++
+		}
+	}
+
+	r.logger.Info().
+		Str("stack_name", r.stackKey()).
+		Str("fingerprint", r.composeHash).
+		Int("services_evaluated", len(stackHealth.Services)).
+		Int("services_ok", okCount).
+		Int("services_degraded", degradedCount).
+		Int("services_failed", failedCount).
+		Int("transitions", len(transitions)).
+		Msg("health evaluation summary")
 }
 
 func (r *Runner) withStateLock(fn func() error) error {

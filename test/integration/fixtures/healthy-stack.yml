@@ -1,0 +1,14 @@
+# Test compose fixture: healthy stack
+version: '3.9'
+
+services:
+  web:
+    image: nginx:1.25-alpine
+    deploy:
+      replicas: 2
+
+  api:
+    image: alpine:3.19
+    command: sleep infinity
+    deploy:
+      replicas: 1

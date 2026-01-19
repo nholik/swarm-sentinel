@@ -226,6 +226,64 @@ func TestEvaluateStackHealth_ConfigSecretDrift(t *testing.T) {
 	}
 }
 
+func TestEvaluateStackHealth_UpdateInProgressSuppressesReplicaAlerts(t *testing.T) {
+	desired := compose.DesiredState{
+		Services: map[string]compose.DesiredService{
+			"api": {Image: "app:v1", Mode: "replicated", Replicas: 3},
+		},
+	}
+	actual := &swarm.ActualState{
+		Services: map[string]swarm.ActualService{
+			"api": {
+				Name:            "api",
+				Image:           "app:v1",
+				DesiredReplicas: 3,
+				RunningReplicas: 1,
+				UpdateState:     "updating",
+			},
+		},
+	}
+
+	health := EvaluateStackHealth(desired, actual, true)
+	serviceHealth := health.Services["api"]
+
+	if serviceHealth.Status != StatusOK {
+		t.Fatalf("expected ok status, got %s", serviceHealth.Status)
+	}
+	if len(serviceHealth.Reasons) != 0 {
+		t.Fatalf("expected no reasons, got %v", serviceHealth.Reasons)
+	}
+}
+
+func TestEvaluateStackHealth_UpdateInProgressStillAlertsOnZeroReplicas(t *testing.T) {
+	desired := compose.DesiredState{
+		Services: map[string]compose.DesiredService{
+			"api": {Image: "app:v1", Mode: "replicated", Replicas: 3},
+		},
+	}
+	actual := &swarm.ActualState{
+		Services: map[string]swarm.ActualService{
+			"api": {
+				Name:            "api",
+				Image:           "app:v1",
+				DesiredReplicas: 3,
+				RunningReplicas: 0,
+				UpdateState:     "rollback_started",
+			},
+		},
+	}
+
+	health := EvaluateStackHealth(desired, actual, true)
+	serviceHealth := health.Services["api"]
+
+	if serviceHealth.Status != StatusFailed {
+		t.Fatalf("expected failed status, got %s", serviceHealth.Status)
+	}
+	if !containsReason(serviceHealth.Reasons, "no running replicas") {
+		t.Fatalf("expected replica failure reason, got %v", serviceHealth.Reasons)
+	}
+}
+
 func containsReason(reasons []string, value string) bool {
 	for _, reason := range reasons {
 		if strings.Contains(reason, value) {

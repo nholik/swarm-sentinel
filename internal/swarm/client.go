@@ -24,6 +24,7 @@ type ActualService struct {
 	RunningReplicas int      // Count of tasks in "running" state
 	Configs         []string // Sorted list of config names from running tasks
 	Secrets         []string // Sorted list of secret names from running tasks
+	UpdateState     string   // UpdateStatus.State when present (e.g., updating, rollback_started)
 }
 
 // ActualState represents the complete runtime state of the stack.

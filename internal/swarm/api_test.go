@@ -3,11 +3,13 @@ package swarm
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	dockertypes "github.com/docker/docker/api/types"
 	swarmtypes "github.com/docker/docker/api/types/swarm"
+	"github.com/rs/zerolog"
 )
 
 // mockDockerAPI implements dockerAPI for testing.
@@ -55,7 +57,7 @@ func TestDockerClient_Ping_Success(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	err := client.Ping(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -71,13 +73,114 @@ func TestDockerClient_Ping_Error(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
+	client.retryBackoffs = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
 	err := client.Ping(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if err.Error() != "connection refused" {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDockerClient_Ping_RetriesOnTransientError(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	mock := &mockDockerAPI{
+		pingFn: func(ctx context.Context) (dockertypes.Ping, error) {
+			attempt := atomic.AddInt32(&calls, 1)
+			if attempt < 3 {
+				return dockertypes.Ping{}, errors.New("connection reset by peer")
+			}
+			return dockertypes.Ping{APIVersion: "1.41"}, nil
+		},
+	}
+
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
+	client.retryBackoffs = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestDockerClient_GetActualState_RetriesServiceList(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	replicas := uint64(1)
+	mock := &mockDockerAPI{
+		serviceListFn: func(ctx context.Context, options dockertypes.ServiceListOptions) ([]swarmtypes.Service, error) {
+			attempt := atomic.AddInt32(&calls, 1)
+			if attempt < 3 {
+				return nil, errors.New("timeout")
+			}
+			return []swarmtypes.Service{
+				{
+					ID: "svc1",
+					Spec: swarmtypes.ServiceSpec{
+						Annotations: swarmtypes.Annotations{Name: "prod_api"},
+						Mode: swarmtypes.ServiceMode{
+							Replicated: &swarmtypes.ReplicatedService{Replicas: &replicas},
+						},
+					},
+				},
+			}, nil
+		},
+		taskListFn: func(ctx context.Context, options dockertypes.TaskListOptions) ([]swarmtypes.Task, error) {
+			return nil, nil
+		},
+	}
+
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
+	client.retryBackoffs = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	if _, err := client.GetActualState(context.Background(), "prod"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestDockerClient_GetActualState_RetriesTaskList(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	replicas := uint64(1)
+	mock := &mockDockerAPI{
+		serviceListFn: func(ctx context.Context, options dockertypes.ServiceListOptions) ([]swarmtypes.Service, error) {
+			return []swarmtypes.Service{
+				{
+					ID: "svc1",
+					Spec: swarmtypes.ServiceSpec{
+						Annotations: swarmtypes.Annotations{Name: "prod_api"},
+						Mode: swarmtypes.ServiceMode{
+							Replicated: &swarmtypes.ReplicatedService{Replicas: &replicas},
+						},
+					},
+				},
+			}, nil
+		},
+		taskListFn: func(ctx context.Context, options dockertypes.TaskListOptions) ([]swarmtypes.Task, error) {
+			attempt := atomic.AddInt32(&calls, 1)
+			if attempt < 3 {
+				return nil, errors.New("leader election in progress")
+			}
+			return nil, nil
+		},
+	}
+
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
+	client.retryBackoffs = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	if _, err := client.GetActualState(context.Background(), "prod"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
 	}
 }
 
@@ -144,7 +247,7 @@ func TestDockerClient_GetActualState_Basic(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	state, err := client.GetActualState(context.Background(), "prod")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -220,7 +323,7 @@ func TestDockerClient_GetActualState_GlobalMode(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	state, err := client.GetActualState(context.Background(), "monitoring")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -247,7 +350,7 @@ func TestDockerClient_GetActualState_ServiceListError(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	_, err := client.GetActualState(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error")
@@ -263,7 +366,7 @@ func TestDockerClient_GetActualState_EmptyCluster(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	state, err := client.GetActualState(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -286,7 +389,7 @@ func TestDockerClient_GetActualState_StackFilter(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	_, _ = client.GetActualState(context.Background(), "mystack")
 
 	expected := "com.docker.stack.namespace=mystack"
@@ -306,7 +409,7 @@ func TestDockerClient_Close(t *testing.T) {
 		},
 	}
 
-	client := &DockerClient{api: mock, timeout: 5 * time.Second}
+	client := &DockerClient{api: mock, timeout: 5 * time.Second, logger: zerolog.Nop()}
 	err := client.Close()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

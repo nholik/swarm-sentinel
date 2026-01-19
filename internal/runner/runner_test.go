@@ -1,13 +1,19 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
+	"github.com/nholik/swarm-sentinel/internal/health"
+	"github.com/nholik/swarm-sentinel/internal/state"
 	"github.com/nholik/swarm-sentinel/internal/swarm"
+	"github.com/nholik/swarm-sentinel/internal/transition"
 	"github.com/rs/zerolog"
 )
 
@@ -147,6 +153,172 @@ func TestRunner_Run_ImmediateFirstRun(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("runner did not stop after cancel")
+	}
+}
+
+func TestRunner_Run_LogsRuntimeErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		op   string
+	}{
+		{name: "compose fetch", op: "compose fetch"},
+		{name: "swarm actual state", op: "swarm actual state"},
+	}
+
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			ticker := &fakeTicker{ch: make(chan time.Time, 1)}
+			runCalls := make(chan struct{}, 2)
+			var buffer bytes.Buffer
+			logger := zerolog.New(&buffer)
+
+			r := New(logger, time.Second,
+				WithTickerFactory(func(time.Duration) Ticker {
+					return ticker
+				}),
+				WithRunOnce(func(context.Context) error {
+					runCalls <- struct{}{}
+					return &RuntimeError{Op: testCase.op, Err: errors.New("boom")}
+				}),
+			)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+
+			go func() {
+				_ = r.Run(ctx)
+				close(done)
+			}()
+
+			if !waitForCalls(runCalls, 1, time.Second) {
+				t.Fatalf("expected initial run call")
+			}
+			cancel()
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatalf("runner did not stop after cancel")
+			}
+
+			logs := buffer.String()
+			if !strings.Contains(logs, "\"runtime_error\":true") {
+				t.Fatalf("expected runtime_error field in logs, got %s", logs)
+			}
+			if !strings.Contains(logs, testCase.op) {
+				t.Fatalf("expected operation in logs, got %s", logs)
+			}
+		})
+	}
+}
+
+type memoryStateStore struct {
+	state state.State
+}
+
+func (m *memoryStateStore) Load(context.Context) (state.State, error) {
+	if m.state.Stacks == nil {
+		m.state.Stacks = map[string]state.StackSnapshot{}
+	}
+	return m.state, nil
+}
+
+func (m *memoryStateStore) Save(_ context.Context, st state.State) error {
+	m.state = st
+	return nil
+}
+
+type recordingNotifier struct {
+	calls [][]transition.ServiceTransition
+}
+
+func (n *recordingNotifier) Notify(_ context.Context, _ string, transitions []transition.ServiceTransition) error {
+	n.calls = append(n.calls, transitions)
+	return nil
+}
+
+func TestRunner_AlertStabilizationDelaysNotification(t *testing.T) {
+	store := &memoryStateStore{}
+	notifier := &recordingNotifier{}
+
+	r := New(zerolog.Nop(), time.Second,
+		WithStateStore(store, &sync.Mutex{}),
+		WithNotifier(notifier),
+		WithAlertStabilizationCycles(2),
+	)
+
+	desired := compose.DesiredState{
+		Services: map[string]compose.DesiredService{
+			"api": {Image: "app:v1", Mode: "replicated", Replicas: 2},
+		},
+	}
+
+	r.lastDesiredState = &desired
+	r.lastActualState = &swarm.ActualState{
+		Services: map[string]swarm.ActualService{
+			"api": {Name: "api", Image: "app:v1", DesiredReplicas: 2, RunningReplicas: 2},
+		},
+	}
+
+	if err := r.evaluateAndPersist(context.Background()); err != nil {
+		t.Fatalf("initial evaluate: %v", err)
+	}
+
+	r.lastActualState = &swarm.ActualState{
+		Services: map[string]swarm.ActualService{
+			"api": {Name: "api", Image: "app:v1", DesiredReplicas: 2, RunningReplicas: 1},
+		},
+	}
+
+	if err := r.evaluateAndPersist(context.Background()); err != nil {
+		t.Fatalf("first degraded evaluate: %v", err)
+	}
+	if len(notifier.calls) != 0 {
+		t.Fatalf("expected no notifications yet, got %d", len(notifier.calls))
+	}
+
+	if err := r.evaluateAndPersist(context.Background()); err != nil {
+		t.Fatalf("second degraded evaluate: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected one notification, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0][0].CurrentStatus != health.StatusDegraded {
+		t.Fatalf("expected degraded transition, got %s", notifier.calls[0][0].CurrentStatus)
+	}
+}
+
+func TestRunner_FirstRunNonOKImmediate(t *testing.T) {
+	store := &memoryStateStore{}
+	notifier := &recordingNotifier{}
+
+	r := New(zerolog.Nop(), time.Second,
+		WithStateStore(store, &sync.Mutex{}),
+		WithNotifier(notifier),
+		WithAlertStabilizationCycles(3),
+	)
+
+	desired := compose.DesiredState{
+		Services: map[string]compose.DesiredService{
+			"api": {Image: "app:v1", Mode: "replicated", Replicas: 2},
+		},
+	}
+	r.lastDesiredState = &desired
+	r.lastActualState = &swarm.ActualState{
+		Services: map[string]swarm.ActualService{
+			"api": {Name: "api", Image: "app:v1", DesiredReplicas: 2, RunningReplicas: 1},
+		},
+	}
+
+	if err := r.evaluateAndPersist(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected immediate notification, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0][0].CurrentStatus != health.StatusDegraded {
+		t.Fatalf("expected degraded transition, got %s", notifier.calls[0][0].CurrentStatus)
 	}
 }
 

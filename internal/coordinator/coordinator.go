@@ -6,6 +6,9 @@ import (
 
 	"github.com/nholik/swarm-sentinel/internal/compose"
 	"github.com/nholik/swarm-sentinel/internal/config"
+	"github.com/nholik/swarm-sentinel/internal/healthcheck"
+	"github.com/nholik/swarm-sentinel/internal/metrics"
+	"github.com/nholik/swarm-sentinel/internal/notify"
 	"github.com/nholik/swarm-sentinel/internal/runner"
 	"github.com/nholik/swarm-sentinel/internal/state"
 	"github.com/nholik/swarm-sentinel/internal/swarm"
@@ -15,17 +18,21 @@ import (
 // Coordinator manages multiple Runner instances, one per stack.
 // It spawns runners in parallel and waits for context cancellation.
 type Coordinator struct {
-	logger       zerolog.Logger
-	cfg          config.Config
-	mappings     []config.StackMapping
-	swarmClient  swarm.Client
-	stateStore   state.Store
-	stateMu      *sync.Mutex
-	runners      map[string]*runner.Runner
-	runnerErrors map[string]error
-	cancel       context.CancelFunc
-	done         chan struct{}
-	mu           sync.RWMutex
+	logger                   zerolog.Logger
+	cfg                      config.Config
+	mappings                 []config.StackMapping
+	swarmClient              swarm.Client
+	stateStore               state.Store
+	stateMu                  *sync.Mutex
+	notifier                 notify.Notifier
+	cycleTracker             *healthcheck.Tracker
+	metrics                  *metrics.Metrics
+	alertStabilizationCycles int
+	runners                  map[string]*runner.Runner
+	runnerErrors             map[string]error
+	cancel                   context.CancelFunc
+	done                     chan struct{}
+	mu                       sync.RWMutex
 }
 
 // Option customizes coordinator behavior.
@@ -54,6 +61,34 @@ func WithStateStore(store state.Store, lock *sync.Mutex) Option {
 	return func(c *Coordinator) {
 		c.stateStore = store
 		c.stateMu = lock
+	}
+}
+
+// WithNotifier enables transition notifications for each runner.
+func WithNotifier(notifier notify.Notifier) Option {
+	return func(c *Coordinator) {
+		c.notifier = notifier
+	}
+}
+
+// WithCycleTracker shares a cycle tracker with all runners.
+func WithCycleTracker(tracker *healthcheck.Tracker) Option {
+	return func(c *Coordinator) {
+		c.cycleTracker = tracker
+	}
+}
+
+// WithMetrics shares metrics collectors with all runners.
+func WithMetrics(metricsCollector *metrics.Metrics) Option {
+	return func(c *Coordinator) {
+		c.metrics = metricsCollector
+	}
+}
+
+// WithAlertStabilizationCycles applies alert stabilization to all runners.
+func WithAlertStabilizationCycles(cycles int) Option {
+	return func(c *Coordinator) {
+		c.alertStabilizationCycles = cycles
 	}
 }
 
@@ -90,14 +125,14 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	wg.Wait()
 	c.logger.Info().Msg("all runners stopped")
 
-	// Report any errors
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	// Report any errors (use write lock since runners have finished writing)
+	c.mu.Lock()
 	for stack, err := range c.runnerErrors {
 		if err != nil {
 			c.logger.Error().Err(err).Str("stack", stack).Msg("runner error")
 		}
 	}
+	c.mu.Unlock()
 
 	return nil
 }
@@ -145,6 +180,21 @@ func (c *Coordinator) spawnRunner(ctx context.Context, wg *sync.WaitGroup, mappi
 	}
 	if c.stateStore != nil {
 		opts = append(opts, runner.WithStateStore(c.stateStore, c.stateMu))
+	}
+	if c.notifier != nil {
+		opts = append(opts, runner.WithNotifier(c.notifier))
+	}
+	if c.cycleTracker != nil {
+		opts = append(opts, runner.WithCycleTracker(c.cycleTracker))
+	}
+	if c.metrics != nil {
+		opts = append(opts, runner.WithMetrics(c.metrics))
+	}
+	if c.alertStabilizationCycles > 0 {
+		opts = append(opts, runner.WithAlertStabilizationCycles(c.alertStabilizationCycles))
+	}
+	if len(c.mappings) > 0 {
+		opts = append(opts, runner.WithStacksEvaluated(len(c.mappings)))
 	}
 
 	r := runner.New(

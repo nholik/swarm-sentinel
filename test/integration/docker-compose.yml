@@ -1,0 +1,45 @@
+# Integration test environment for swarm-sentinel
+# Usage:
+#   docker compose -f test/integration/docker-compose.yml up -d
+#   go test -tags=integration ./...
+#   docker compose -f test/integration/docker-compose.yml down
+
+version: '3.9'
+
+services:
+  # Mock compose file server
+  compose-server:
+    image: nginx:alpine
+    volumes:
+      - ./fixtures:/usr/share/nginx/html:ro
+    ports:
+      - "8888:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # Docker socket proxy for safe API access
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      SERVICES: 1
+      TASKS: 1
+      INFO: 1
+      PING: 1
+      CONFIGS: 1
+      SECRETS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "2375:2375"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:2375/_ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+networks:
+  default:
+    name: swarm-sentinel-test
