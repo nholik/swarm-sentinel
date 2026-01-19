@@ -1,4 +1,5 @@
-version: "3.9"
+# Docker Compose file for single-stack swarm-sentinel deployment
+# Deploy with: docker stack deploy -c single-stack.yaml sentinel
 
 services:
   docker-socket-proxy:
@@ -15,6 +16,9 @@ services:
     deploy:
       placement:
         constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 5s
       resources:
         limits:
           memory: 64M
@@ -29,27 +33,35 @@ services:
       SS_LOG_LEVEL: info
       SS_HEALTH_PORT: 8080
       SS_METRICS_PORT: 9090
+      # Use _FILE suffix to load secret from mounted file
       SS_SLACK_WEBHOOK_URL_FILE: /run/secrets/slack-webhook
+      # State path for distroless image (nonroot user home)
+      SS_STATE_PATH: /home/nonroot/state.json
     secrets:
       - slack-webhook
     volumes:
-      - sentinel-state:/var/lib/swarm-sentinel
+      - sentinel-state:/home/nonroot
     networks:
       - sentinel-internal
-    depends_on:
-      - docker-socket-proxy
+    # Note: depends_on has no effect in Swarm mode; sentinel retries Docker API connections
     deploy:
       placement:
         constraints: [node.role == manager]
       replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
       resources:
         limits:
           memory: 128M
+      # Healthcheck calls the sentinel binary with -healthcheck flag (distroless compatible)
       healthcheck:
-        test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+        test: ["/usr/local/bin/swarm-sentinel", "-healthcheck"]
         interval: 30s
         timeout: 5s
         retries: 3
+        start_period: 10s
 
 networks:
   sentinel-internal:
