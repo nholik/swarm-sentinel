@@ -64,30 +64,109 @@ stacks:
 
 Each stack runs independently with isolated health tracking and state management.
 
-### Environment Variables (Shared Settings)
+## Environment Variables Reference
 
-- `SS_COMPOSE_TIMEOUT` (optional): Default HTTP timeout for fetching compose files (default: `10s`)
-- `SS_POLL_INTERVAL` (optional): Poll interval for all sentinel cycles (default: `30s`)
-- `SS_DOCKER_PROXY_URL` (optional): Docker API URL (socket proxy recommended, default: `http://localhost:2375`)
-- `SS_DOCKER_API_TIMEOUT` (optional): Timeout for Docker API calls (default: `30s`)
-- `SS_STATE_PATH` (optional): Path to persisted state JSON for transitions (default: `/var/lib/swarm-sentinel/state.json`)
-- `SS_LOG_LEVEL` (optional): Log level - trace, debug, info, warn, error, fatal, panic (default: `info`)
-- `SS_DOCKER_TLS_VERIFY` (optional): Enable TLS when connecting to the Docker API host (default: `false`)
-- `SS_DOCKER_TLS_CA` (optional): Path to CA certificate for Docker API TLS
-- `SS_DOCKER_TLS_CERT` (optional): Path to client certificate for Docker API TLS
-- `SS_DOCKER_TLS_KEY` (optional): Path to client key for Docker API TLS
-- `SS_SLACK_WEBHOOK_URL` (optional): Slack webhook URL for alerts
-- `SS_COMPOSE_MAPPING_FILE` (optional): Path to YAML mapping file for multi-stack mode
+### Core Settings
 
-**Single-Stack Only:**
-- `SS_COMPOSE_URL` (required in single-stack mode): URL to the rendered `docker-compose.yml`
-- `SS_STACK_NAME` (optional): Swarm stack name used to scope services (empty means all services)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_POLL_INTERVAL` | `30s` | How often to evaluate stack health |
+| `SS_LOG_LEVEL` | `info` | Log level: trace, debug, info, warn, error, fatal, panic |
+| `SS_DRY_RUN` | `false` | When true, log alerts but don't send notifications |
 
-`DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` are honored as fallbacks for TLS settings.
+### Compose Source (Single-Stack Mode)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_COMPOSE_URL` | *(required)* | URL to fetch the rendered docker-compose.yml |
+| `SS_COMPOSE_TIMEOUT` | `10s` | HTTP timeout for fetching compose files |
+| `SS_STACK_NAME` | *(empty)* | Swarm stack name to scope services; empty means all services in compose |
+
+### Compose Source (Multi-Stack Mode)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_COMPOSE_MAPPING_FILE` | *(auto-detected)* | Path to YAML mapping file; auto-detects Swarm config/secret mounts |
+
+### Docker API
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_DOCKER_PROXY_URL` | `http://localhost:2375` | Docker API endpoint (socket proxy recommended) |
+| `SS_DOCKER_API_TIMEOUT` | `30s` | Timeout for Docker API calls |
+| `SS_DOCKER_TLS_VERIFY` | `false` | Enable TLS verification for Docker API |
+| `SS_DOCKER_TLS_CA` | *(empty)* | Path to CA certificate for Docker API TLS |
+| `SS_DOCKER_TLS_CERT` | *(empty)* | Path to client certificate for Docker API TLS |
+| `SS_DOCKER_TLS_KEY` | *(empty)* | Path to client key for Docker API TLS |
+
+**Compatibility:** `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` are honored as fallbacks.
+
+### Notifications
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_SLACK_WEBHOOK_URL` | *(empty)* | Slack incoming webhook URL; empty disables Slack |
+| `SS_WEBHOOK_URL` | *(empty)* | Generic webhook URL for custom integrations |
+| `SS_WEBHOOK_TEMPLATE` | *(JSON)* | Go text/template for webhook payload |
+
+### Alert Behavior
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_ALERT_STABILIZATION_CYCLES` | `2` | Consecutive cycles in same state before alerting |
+
+### State Persistence
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_STATE_PATH` | `/var/lib/swarm-sentinel/state.json` | Path to persisted state file |
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SS_HEALTH_PORT` | `8080` | Port for health endpoints; 0 to disable |
+| `SS_METRICS_PORT` | `9090` | Port for Prometheus metrics; 0 to disable |
+
+### Health Endpoints
+
+- `GET /healthz` - Returns 200 if last cycle completed within 2× poll interval
+- `GET /readyz` - Returns 200 after first successful cycle completes
+
+### Prometheus Metrics
+
+- `swarm_sentinel_cycle_duration_seconds` - Histogram of evaluation cycle duration
+- `swarm_sentinel_services_total{stack, status}` - Gauge of services by status
+- `swarm_sentinel_alerts_total{stack, severity}` - Counter of alerts emitted
+- `swarm_sentinel_docker_api_errors_total` - Counter of Docker API failures
+- `swarm_sentinel_last_successful_cycle_timestamp` - Unix timestamp of last success
+
+## Security Considerations
+
+### SSRF Protection
+
+Compose URLs are validated to block cloud provider metadata endpoints:
+- AWS/GCP/Azure metadata (169.254.169.254)
+- GCP metadata.google.internal
+- All link-local addresses (169.254.x.x)
+
+### State File Permissions
+
+The state file is created with mode 0600 to protect infrastructure details.
+
+### Secret Handling
+
+Webhook URLs are never logged; only "set" or "unset" is shown in startup logs.
 
 ---
 
 ## Docker Swarm Deployment
+
+### Prerequisites
+
+1. A Docker Swarm cluster with at least one manager node
+2. A socket proxy (recommended) or direct Docker socket access
+3. Compose files accessible via HTTP(S)
 
 ### Single-Stack Mode Example
 
@@ -95,29 +174,95 @@ Each stack runs independently with isolated health tracking and state management
 version: '3.9'
 
 services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      SERVICES: 1
+      TASKS: 1
+      INFO: 1
+      PING: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sentinel-internal
+    deploy:
+      placement:
+        constraints: [node.role == manager]
+      resources:
+        limits:
+          memory: 64M
+
   sentinel:
     image: swarm-sentinel:latest
     environment:
-      SS_COMPOSE_URL: https://artifact.example.com/prod/compose.yml
+      SS_COMPOSE_URL: https://artifacts.example.com/prod/compose.yml
       SS_STACK_NAME: prod
       SS_DOCKER_PROXY_URL: http://docker-socket-proxy:2375
       SS_POLL_INTERVAL: 30s
+      SS_SLACK_WEBHOOK_URL_FILE: /run/secrets/slack-webhook
       SS_LOG_LEVEL: info
+      SS_HEALTH_PORT: 8080
+      SS_METRICS_PORT: 9090
+    secrets:
+      - slack-webhook
+    volumes:
+      - sentinel-state:/var/lib/swarm-sentinel
+    networks:
+      - sentinel-internal
     deploy:
       placement:
         constraints: [node.role == manager]
       replicas: 1
+      resources:
+        limits:
+          memory: 128M
+      healthcheck:
+        test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+
+networks:
+  sentinel-internal:
+    driver: overlay
+
+volumes:
+  sentinel-state:
+
+secrets:
+  slack-webhook:
+    external: true
 ```
 
-### Multi-Stack Mode Example
+### Multi-Stack Mode Example (Production)
 
-**1. Create the mapping config:**
+**1. Create the stack mapping config:**
+
+```yaml
+# stacks.yaml
+stacks:
+  - name: prod
+    compose_url: https://artifacts.example.com/prod/compose.yml
+    timeout: 20s
+    
+  - name: staging
+    compose_url: https://artifacts.example.com/staging/compose.yml
+    
+  - name: monitoring
+    compose_url: https://artifacts.example.com/monitoring/compose.yml
+```
 
 ```bash
-docker config create compose-mapping ./stacks.yaml
+docker config create compose-mapping stacks.yaml
 ```
 
-**2. Deploy sentinel with mapping mounted:**
+**2. Create the Slack webhook secret:**
+
+```bash
+echo "https://hooks.slack.com/services/T.../B.../xxx" | docker secret create slack-webhook -
+```
+
+**3. Deploy the stack:**
 
 ```yaml
 version: '3.9'
@@ -125,50 +270,86 @@ version: '3.9'
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
-    ports:
-      - "2375:2375"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       SERVICES: 1
       TASKS: 1
       INFO: 1
+      PING: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sentinel-internal
     deploy:
       placement:
         constraints: [node.role == manager]
+      resources:
+        limits:
+          memory: 64M
 
   sentinel:
     image: swarm-sentinel:latest
     environment:
       SS_DOCKER_PROXY_URL: http://docker-socket-proxy:2375
       SS_POLL_INTERVAL: 30s
+      SS_SLACK_WEBHOOK_URL_FILE: /run/secrets/slack-webhook
       SS_LOG_LEVEL: info
-      # Mapping file auto-detected at /run/configs/compose-mapping.yaml
+      SS_ALERT_STABILIZATION_CYCLES: 2
+      SS_HEALTH_PORT: 8080
+      SS_METRICS_PORT: 9090
     configs:
-      - compose-mapping
+      - source: compose-mapping
+        target: /run/configs/compose-mapping.yaml
+    secrets:
+      - slack-webhook
+    volumes:
+      - sentinel-state:/var/lib/swarm-sentinel
+    networks:
+      - sentinel-internal
     depends_on:
       - docker-socket-proxy
     deploy:
       placement:
         constraints: [node.role == manager]
       replicas: 1
+      resources:
+        limits:
+          memory: 256M
+      healthcheck:
+        test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+
+networks:
+  sentinel-internal:
+    driver: overlay
+
+volumes:
+  sentinel-state:
 
 configs:
   compose-mapping:
-    file: ./stacks.yaml
+    external: true
+
+secrets:
+  slack-webhook:
+    external: true
 ```
 
-**3. Update stacks (rotate config):**
+**4. Update stacks (rotate config):**
 
 ```bash
 # Edit stacks.yaml
 vim stacks.yaml
 
-# Create new config
-docker config create compose-mapping ./stacks.yaml
+# Create new config version
+docker config create compose-mapping-v2 stacks.yaml
 
-# Force service to redeploy (picks up new config)
-docker service update --force sentinel
+# Update service to use new config
+docker service update \
+  --config-rm compose-mapping \
+  --config-add source=compose-mapping-v2,target=/run/configs/compose-mapping.yaml \
+  sentinel_sentinel
 ```
 
 ### Why Swarm Configs for Multi-Stack Mode
@@ -178,3 +359,45 @@ docker service update --force sentinel
 - **Non-destructive:** Update without redeploying sentinel service itself
 - **Secure:** Configs are encrypted at rest in Swarm
 - **Auditable:** Swarm logs config creation/update events
+
+## Monitoring Scope
+
+### What swarm-sentinel monitors
+
+- **Service existence**: Services defined in compose must exist in Swarm
+- **Replica counts**: Running replicas vs desired (replicated and global modes)
+- **Image versions**: Expected image tag vs deployed image
+- **Configs/Secrets**: Attached configs and secrets (name-based, not content)
+- **Service updates**: Awareness of rolling updates to suppress false positives
+
+### What swarm-sentinel does NOT monitor
+
+- **Networks/Volumes**: Infrastructure resources are out of scope
+- **Config/Secret content**: Only names are compared, not actual content
+- **Image digests**: Tag-based comparison; digest-pinned workflows may need enhancement
+- **Node health**: Focus is on service health, not infrastructure
+
+## Troubleshooting
+
+### Common Issues
+
+**"docker api unreachable"**
+- Verify socket proxy is running and accessible
+- Check `SS_DOCKER_PROXY_URL` is correct
+- Ensure socket proxy has `SERVICES=1 TASKS=1 INFO=1 PING=1`
+
+**"compose fetch failed"**
+- Verify compose URL is accessible from the container
+- Check for authentication requirements
+- Review `SS_COMPOSE_TIMEOUT` if fetches are slow
+
+**"state file corrupt"**
+- Safe to delete; sentinel will start fresh
+- Check disk space on state volume
+
+### Debug Mode
+
+Set `SS_LOG_LEVEL=debug` for verbose output including:
+- Compose fingerprint changes
+- Per-service health evaluation
+- Notification delivery attempts

@@ -356,6 +356,41 @@ func validateHTTPURL(value, name string) error {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return fmt.Errorf("invalid %s: must be http or https URL", name)
 	}
+
+	// SSRF protection: block cloud metadata endpoints
+	if err := validateNotMetadataEndpoint(parsed, name); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateNotMetadataEndpoint blocks requests to cloud provider metadata services
+// to prevent SSRF attacks that could leak credentials or sensitive instance data.
+func validateNotMetadataEndpoint(u *url.URL, name string) error {
+	hostname := strings.ToLower(u.Hostname())
+
+	// Cloud provider metadata endpoints
+	blockedHosts := []string{
+		"169.254.169.254", // AWS, GCP, Azure, DigitalOcean metadata
+		"metadata.google.internal",
+		"metadata.goog",
+		"metadata.azure.com",
+		"169.254.170.2", // AWS ECS task metadata
+		"fd00:ec2::254", // AWS IPv6 metadata
+	}
+
+	for _, blocked := range blockedHosts {
+		if hostname == blocked {
+			return fmt.Errorf("%s cannot target cloud metadata endpoint: %s", name, hostname)
+		}
+	}
+
+	// Block link-local addresses (169.254.x.x) which are used for metadata services
+	if strings.HasPrefix(hostname, "169.254.") {
+		return fmt.Errorf("%s cannot target link-local address: %s", name, hostname)
+	}
+
 	return nil
 }
 

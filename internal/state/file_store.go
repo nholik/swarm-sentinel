@@ -64,8 +64,16 @@ func (s *FileStore) Save(ctx context.Context, state State) error {
 		return err
 	}
 
+	// Create temp file with restrictive permissions (0600) to protect state data
 	tempFile, err := os.CreateTemp(dir, ".state-*.json")
 	if err != nil {
+		return err
+	}
+
+	// Ensure restrictive permissions on temp file before writing data
+	if err := os.Chmod(tempFile.Name(), 0o600); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
 		return err
 	}
 

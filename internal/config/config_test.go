@@ -455,3 +455,103 @@ func mustChdir(t *testing.T, dir string) func() {
 		}
 	}
 }
+
+func TestLoad_SSRFProtection(t *testing.T) {
+	cases := []struct {
+		name       string
+		composeURL string
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name:       "AWS metadata IPv4",
+			composeURL: "http://169.254.169.254/latest/meta-data/",
+			wantErr:    true,
+			errContain: "cloud metadata endpoint",
+		},
+		{
+			name:       "AWS metadata with path",
+			composeURL: "http://169.254.169.254/latest/user-data",
+			wantErr:    true,
+			errContain: "cloud metadata endpoint",
+		},
+		{
+			name:       "Google metadata",
+			composeURL: "http://metadata.google.internal/computeMetadata/v1/",
+			wantErr:    true,
+			errContain: "cloud metadata endpoint",
+		},
+		{
+			name:       "Google metadata alternate",
+			composeURL: "http://metadata.goog/computeMetadata/v1/",
+			wantErr:    true,
+			errContain: "cloud metadata endpoint",
+		},
+		{
+			name:       "Azure metadata",
+			composeURL: "http://metadata.azure.com/metadata/instance",
+			wantErr:    true,
+			errContain: "cloud metadata endpoint",
+		},
+		{
+			name:       "AWS ECS task metadata",
+			composeURL: "http://169.254.170.2/v4/credentials",
+			wantErr:    true,
+			errContain: "metadata endpoint",
+		},
+		{
+			name:       "link-local other",
+			composeURL: "http://169.254.1.1/some/path",
+			wantErr:    true,
+			errContain: "link-local address",
+		},
+		{
+			name:       "valid external URL",
+			composeURL: "https://artifacts.example.com/compose.yml",
+			wantErr:    false,
+		},
+		{
+			name:       "valid internal URL",
+			composeURL: "http://config-server:8080/compose.yml",
+			wantErr:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			restoreDir := mustChdir(t, tmpDir)
+			defer restoreDir()
+
+			t.Setenv(envComposeURL, tc.composeURL)
+
+			_, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %s", tc.composeURL)
+				}
+				if tc.errContain != "" && !contains(err.Error(), tc.errContain) {
+					t.Fatalf("expected error containing %q, got %v", tc.errContain, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
+}
+
+func containsAt(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

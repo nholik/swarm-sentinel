@@ -1,0 +1,21 @@
+# Test compose fixture: degraded stack (for drift testing)
+version: '3.9'
+
+services:
+  web:
+    image: nginx:1.26-alpine  # Different image version
+    deploy:
+      replicas: 3  # Different replica count
+
+  api:
+    image: alpine:3.19
+    command: sleep infinity
+    deploy:
+      replicas: 2
+
+  # Extra service not in actual state
+  worker:
+    image: alpine:3.19
+    command: sleep infinity
+    deploy:
+      replicas: 1
